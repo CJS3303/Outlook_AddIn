@@ -20,6 +20,20 @@ namespace OutlookAddIn1
 
         private void ThisAddIn_Startup(object sender, EventArgs e)
         {
+            // Wire ItemSend immediately (lightweight, no MAPI access)
+            this.Application.ItemSend += Application_ItemSend;
+
+            // Defer heavy COM/MAPI work (GetDefaultFolder, Items, SMTP lookup)
+            // to the first idle moment after Outlook finishes loading.
+            // This keeps the add-in startup instant.
+            System.Windows.Forms.Application.Idle += OnFirstIdle;
+        }
+
+        private void OnFirstIdle(object sender, EventArgs e)
+        {
+            // Unsubscribe immediately — we only need this once
+            System.Windows.Forms.Application.Idle -= OnFirstIdle;
+
             try
             {
                 _calendarFolder = this.Application.Session.GetDefaultFolder(Outlook.OlDefaultFolders.olFolderCalendar);
@@ -28,14 +42,14 @@ namespace OutlookAddIn1
                 _calendarItems.ItemAdd += CalendarItems_ItemAdd;
                 _calendarItems.ItemChange += CalendarItems_ItemChange;
 
-                this.Application.ItemSend += Application_ItemSend;
-
-                // Pre-fetch user email on startup (cache it)
+                // Pre-fetch user email (SMTP resolution via Exchange)
                 _cachedUserEmail = GetCurrentUserSmtpFromSession();
+
+                System.Diagnostics.Debug.WriteLine($"Deferred init complete. Email: {_cachedUserEmail}");
             }
             catch (Exception ex)
             {
-                System.Diagnostics.Debug.WriteLine($"ThisAddIn_Startup error (ribbon should still load): {ex.Message}");
+                System.Diagnostics.Debug.WriteLine($"Deferred init error: {ex.Message}");
             }
         }
 
@@ -810,15 +824,22 @@ namespace OutlookAddIn1
                     _manageTimesheetPane.DockPositionRestrict = Microsoft.Office.Core.MsoCTPDockPositionRestrict.msoCTPDockPositionRestrictNoHorizontal;
                     _manageTimesheetPane.Width = FixedWidth;
 
-                    // Snap the width back whenever the user tries to drag-resize
+                    // Snap the width back whenever the user tries to drag-resize.
+                    // Guard flag prevents re-entrant loop (setting Width fires SizeChanged again).
+                    bool resizing = false;
                     paneControl.SizeChanged += (s, ev) =>
                     {
+                        if (resizing) return;
                         try
                         {
                             if (_manageTimesheetPane != null && _manageTimesheetPane.Width != FixedWidth)
+                            {
+                                resizing = true;
                                 _manageTimesheetPane.Width = FixedWidth;
+                            }
                         }
                         catch { /* pane may be disposing */ }
+                        finally { resizing = false; }
                     };
                 }
 

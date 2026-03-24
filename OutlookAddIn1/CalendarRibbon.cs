@@ -18,19 +18,13 @@ namespace OutlookAddIn1
     {
         private Office.IRibbonUI _ribbon;
 
-        private static readonly TimeZoneInfo TorontoTimeZone = GetTorontoTimeZoneInternal();
-
-        private static TimeZoneInfo GetTorontoTimeZoneInternal()
+        // Lazy: registry read deferred until first actual use (not during ribbon creation)
+        private static readonly Lazy<TimeZoneInfo> _lazyTorontoTz = new Lazy<TimeZoneInfo>(() =>
         {
-            try
-            {
-                return TimeZoneInfo.FindSystemTimeZoneById("Eastern Standard Time");
-            }
-            catch
-            {
-                return TimeZoneInfo.Local; // Fallback to local time
-            }
-        }
+            try { return TimeZoneInfo.FindSystemTimeZoneById("Eastern Standard Time"); }
+            catch { return TimeZoneInfo.Local; }
+        });
+        private static TimeZoneInfo TorontoTimeZone => _lazyTorontoTz.Value;
 
         private string ExplorerTabsXml() => @"
   <tab idMso='TabCalendar'>

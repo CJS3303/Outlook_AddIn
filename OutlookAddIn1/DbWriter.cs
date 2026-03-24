@@ -8,9 +8,12 @@ namespace OutlookAddIn1
 {
     public static class DbWriter
     {
-        private static readonly string ConnString =
-            System.Configuration.ConfigurationManager
-                   .ConnectionStrings["OemsDatabase"]?.ConnectionString;
+        // Lazy: defers ConfigurationManager + SqlClient assembly loading
+        // until the first actual database call, not at class-load time
+        private static string _connString;
+        private static string ConnString =>
+            _connString ?? (_connString = System.Configuration.ConfigurationManager
+                   .ConnectionStrings["OemsDatabase"]?.ConnectionString);
 
         private static object DbOrNull(string s)
         {

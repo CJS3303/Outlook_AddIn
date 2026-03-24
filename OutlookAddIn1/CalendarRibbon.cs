@@ -35,7 +35,6 @@ namespace OutlookAddIn1
         private string ExplorerTabsXml() => @"
   <tab idMso='TabCalendar'>
     <group id='grpTTIMeetings' label='TTI Specific' insertAfterMso='GroupHelp'>
-      <button id='btnNewOnlineMeeting' label='New Online Meeting' onAction='OnNewMeeting'/>
       <button id='btnManageTimesheet' label='Manage Timesheet' onAction='OnManageTimesheet'/>
     </group>
   </tab>";
@@ -65,88 +64,11 @@ namespace OutlookAddIn1
                 return xml;
             }
 
-            // === Inspector (open meeting/appointment window) - COMMENTED OUT: Edit Program button removed ===
-            // Edit Program functionality is redundant since Submit Timesheet now allows editing
-            /*
-            if (string.Equals(ribbonID, "Microsoft.Outlook.Appointment", StringComparison.Ordinal))
-            {
-                return @"
-<customUI xmlns='http://schemas.microsoft.com/office/2009/07/customui' onLoad='OnRibbonLoad'>
-  <ribbon>
-    <tabs>
-      <tab idMso='TabAppointment'>
-        <group id='grpTTIEditA' label='TTI Specific' insertAfterMso='GroupActions'>
-          <button id='btnEditProgramA'
-                  label='Edit Program'
-                  size='large'
-                  onAction='OnEditProgram' />
-        </group>
-      </tab>
-      <tab idMso='TabMeeting'>
-        <group id='grpTTIEditM' label='TTI Specific' insertAfterMso='GroupActions'>
-          <button id='btnEditProgramM'
-                  label='Edit Program'
-                  size='large'
-                  onAction='OnEditProgram' />
-        </group>
-      </tab>
-    </tabs>
-  </ribbon>
-</customUI>";
-            }
-            */
-
             return null;
         }
 
 
         public void OnRibbonLoad(Office.IRibbonUI ribbonUI) { _ribbon = ribbonUI; }
-
-        public async void OnNewMeeting(Office.IRibbonControl control)
-        {
-            using (var dlg = new ProgramPickerForm())
-            {
-                var result = dlg.ShowDialog();
-                if (result != DialogResult.OK) return;
-
-                try
-                {
-                    var app = Globals.ThisAddIn.Application;
-
-                    var appt = app.CreateItem(Outlook.OlItemType.olAppointmentItem) as Outlook.AppointmentItem;
-                    appt.MeetingStatus = Outlook.OlMeetingStatus.olMeeting;
-
-                    // ✅ FIX: Leave subject empty (user will fill in their own title)
-                    appt.Subject = "";
-                    appt.Start = DateTime.Now.AddMinutes(30);
-                    appt.End = DateTime.Now.AddMinutes(60);
-                    appt.Location = "Microsoft Teams";
-
-                    // Store metadata in UserProperties
-                    var ups = appt.UserProperties;
-                    AddOrSetTextProp(ups, "ProgramCode", dlg.ProgramCode);
-                    AddOrSetTextProp(ups, "ActivityCode", dlg.ActivityCode);
-                    AddOrSetTextProp(ups, "StageCode", dlg.StageCode);
-                    // ✅ REMOVED: ProcessOnSend flag - users must manually submit timesheet
-                    // AddOrSetTextProp(ups, "ProcessOnSend", "true");
-
-                    // Add metadata to body ONLY on initial creation
-                    var email = GetCurrentUserEmailAddress();
-                    var metaText = BuildPlainTextMetaHeader(dlg.ProgramCode, dlg.ActivityCode, dlg.StageCode, email);
-                    appt.Body = metaText + (appt.Body ?? "");
-
-                    // ✅ NO CATEGORY: Meeting is not submitted yet, category will be applied when user sends it
-                    // The ItemSend event in ThisAddIn will handle database submission and category application
-
-                    // Display the meeting window
-                    appt.Display(true);
-                }
-                catch (Exception ex)
-                {
-                    MessageBox.Show("Error: " + ex.Message);
-                }
-            }
-        }
 
         public void OnManageTimesheet(Office.IRibbonControl control)
         {
@@ -981,81 +903,6 @@ namespace OutlookAddIn1
             }
         }
 
-        // === EDIT currently open meeting (inside Inspector) - COMMENTED OUT ===
-        // This functionality is now redundant since Submit Timesheet allows editing existing timesheets
-        /*
-        public async void OnEditProgram(Office.IRibbonControl control)
-        {
-            try
-            {
-                var insp = Globals.ThisAddIn.Application.ActiveInspector();
-                Outlook.AppointmentItem appt = (insp != null) ? insp.CurrentItem as Outlook.AppointmentItem : null;
-                if (appt == null)
-                {
-                    MessageBox.Show("Open a meeting first, then click Edit Program.");
-                    return;
-                }
-
-                // Read current values to prefill
-                string currProgram = GetUP(appt, "ProgramCode");
-                string currActivity = GetUP(appt, "ActivityCode");
-                string currStage = GetUP(appt, "StageCode");
-
-                using (var dlg = new ProgramPickerForm(currProgram, currActivity, currStage))
-                {
-                    if (dlg.ShowDialog() != DialogResult.OK)
-                    {
-                        return;
-                    }
-
-                    // Update UserProperties ONLY - DON'T modify body
-                    var ups = appt.UserProperties;
-                    AddOrSetTextProp(ups, "ProgramCode", dlg.ProgramCode);
-                    AddOrSetTextProp(ups, "ActivityCode", dlg.ActivityCode);
-                    AddOrSetTextProp(ups, "StageCode", dlg.StageCode);
-
-                    var processOnSend = GetUP(appt, "ProcessOnSend");
-                    var isDraft = string.Equals(processOnSend, "true", StringComparison.OrdinalIgnoreCase) 
-                               || string.IsNullOrEmpty(appt.EntryID);
-
-                    if (isDraft)
-                    {
-                        // Draft: metadata updated but NOT written to DB until Send
-                        MessageBox.Show("Metadata updated. A database record will be created when you send the meeting.", "Edit Program");
-                        return;
-                    }
-
-                    // Existing item: persist and upsert now
-                    appt.Save();
-
-                    var email = GetCurrentUserEmailAddress();
-                    var rec = new MeetingRecord
-                    {
-                        Source = "EditProgram",
-                        EntryId = appt.EntryID ?? "",
-                        GlobalId = GetGlobalId(appt),
-                        Subject = appt.Subject ?? "",
-                        StartUtc = appt.StartUTC,
-                        EndUtc = appt.EndUTC,
-                        ProgramCode = dlg.ProgramCode ?? "",
-                        ActivityCode = dlg.ActivityCode ?? "",
-                        StageCode = dlg.StageCode ?? "",
-                        UserDisplayName = email,
-                        LastModifiedUtc = appt.LastModificationTime.ToUniversalTime(),
-                        Recipients = GetAllRecipients(appt)  // Add recipients
-                    };
-
-                    await DbWriter.UpsertAsync(rec);
-                    MessageBox.Show("Program data updated to Timesheet.", "Edit Program");
-                }
-            }
-            catch (Exception ex)
-            {
-                MessageBox.Show("Edit Program failed: " + ex.Message + "\n\nStack: " + ex.StackTrace, "Error");
-            }
-        }
-        */
-
         // === Helpers ===
 
         private static string GetUP(Outlook.AppointmentItem appt, string name)
@@ -1152,14 +999,6 @@ namespace OutlookAddIn1
             return TorontoTimeZone;
         }
 
-        // Build plain text meta header for body (used only on initial creation)
-        private static string BuildPlainTextMetaHeader(string program, string activity, string stage, string email)
-        {
-            return
-                "Program:  " + program + "\r\n" +
-                "Activity: " + activity + "\r\n" +
-                "Stage:    " + stage + "\r\n";
-        }
 
 
         private string GetCurrentUserEmailAddress()

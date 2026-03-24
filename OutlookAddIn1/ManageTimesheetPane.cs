@@ -421,51 +421,38 @@ namespace OutlookAddIn1
                     }
                 }
 
-                // ✅ Group by GlobalId to handle multi-program submissions
+                // Merge submitted (grouped by GlobalId) and ignored into one unified list,
+                // then group by date so both types appear together per date bucket.
                 var groupedSubmitted = submittedMeetings
                     .GroupBy(m => m.GlobalId)
-                    .Select(g => new GroupedMeeting { GlobalId = g.Key, Records = g.ToList() })
+                    .Select(g => new SubmittedTabItem { IsIgnored = false, Records = g.ToList() })
                     .ToList();
+
+                var groupedIgnored = ignoredMeetings
+                    .Select(m => new SubmittedTabItem { IsIgnored = true, Records = new List<MeetingRecord> { m } })
+                    .ToList();
+
+                var allItems = groupedSubmitted.Concat(groupedIgnored).ToList();
 
                 var today = DateTime.Today;
-                
-                // ✅ Group SUBMITTED by date
-                var todaySubmitted = groupedSubmitted
-                    .Where(g => g.Records[0].StartTorontoTime.Date == today)
-                    .OrderByDescending(g => g.Records[0].StartTorontoTime)
-                    .ToList();
-                
-                var yesterdaySubmitted = groupedSubmitted
-                    .Where(g => g.Records[0].StartTorontoTime.Date == today.AddDays(-1))
-                    .OrderByDescending(g => g.Records[0].StartTorontoTime)
-                    .ToList();
-                
-                var lastWeekSubmitted = groupedSubmitted
-                    .Where(g => g.Records[0].StartTorontoTime.Date >= today.AddDays(-7) && g.Records[0].StartTorontoTime.Date < today.AddDays(-1))
-                    .OrderByDescending(g => g.Records[0].StartTorontoTime)
-                    .ToList();
 
-                // ✅ Group IGNORED by date
-                var todayIgnored = ignoredMeetings
-                    .Where(m => m.StartTorontoTime.Date == today)
-                    .OrderByDescending(m => m.StartTorontoTime)
-                    .ToList();
-                
-                var yesterdayIgnored = ignoredMeetings
-                    .Where(m => m.StartTorontoTime.Date == today.AddDays(-1))
-                    .OrderByDescending(m => m.StartTorontoTime)
-                    .ToList();
-                
-                var lastWeekIgnored = ignoredMeetings
-                    .Where(m => m.StartTorontoTime.Date >= today.AddDays(-7) && m.StartTorontoTime.Date < today.AddDays(-1))
-                    .OrderByDescending(m => m.StartTorontoTime)
-                    .ToList();
+                var todayItems = allItems
+                    .Where(i => i.StartTorontoTime.Date == today)
+                    .OrderByDescending(i => i.StartTorontoTime).ToList();
+
+                var yesterdayItems = allItems
+                    .Where(i => i.StartTorontoTime.Date == today.AddDays(-1))
+                    .OrderByDescending(i => i.StartTorontoTime).ToList();
+
+                var lastWeekItems = allItems
+                    .Where(i => i.StartTorontoTime.Date >= today.AddDays(-7) && i.StartTorontoTime.Date < today.AddDays(-1))
+                    .OrderByDescending(i => i.StartTorontoTime).ToList();
 
                 flowSubmitted.Invoke((MethodInvoker)delegate
                 {
                     flowSubmitted.Controls.Clear();
-                    
-                    if (submittedMeetings.Count == 0 && ignoredMeetings.Count == 0)
+
+                    if (allItems.Count == 0)
                     {
                         flowSubmitted.Controls.Add(new Label
                         {
@@ -477,23 +464,9 @@ namespace OutlookAddIn1
                         return;
                     }
 
-                    // ✅ Display SUBMITTED section
-                    if (submittedMeetings.Count > 0)
-                    {
-                        if (todaySubmitted.Count > 0) AddSubmittedMeetingSection("Today (Submitted)", todaySubmitted);
-                        if (yesterdaySubmitted.Count > 0) AddSubmittedMeetingSection("Yesterday (Submitted)", yesterdaySubmitted);
-                        if (lastWeekSubmitted.Count > 0) AddSubmittedMeetingSection("Last Week (Submitted)", lastWeekSubmitted);
-                    }
-
-                    // ✅ Display IGNORED section (with Un-Ignore buttons)
-                    if (ignoredMeetings.Count > 0)
-                    {
-                        flowSubmitted.Controls.Add(new Label { Size = new Size(flowSubmitted.Width - 25, 20) }); // Spacer
-
-                        if (todayIgnored.Count > 0) AddIgnoredMeetingSection("Today (Ignored)", todayIgnored);
-                        if (yesterdayIgnored.Count > 0) AddIgnoredMeetingSection("Yesterday (Ignored)", yesterdayIgnored);
-                        if (lastWeekIgnored.Count > 0) AddIgnoredMeetingSection("Last Week (Ignored)", lastWeekIgnored);
-                    }
+                    if (todayItems.Count > 0)     AddSubmittedTabSection("Today",     todayItems);
+                    if (yesterdayItems.Count > 0) AddSubmittedTabSection("Yesterday", yesterdayItems);
+                    if (lastWeekItems.Count > 0)  AddSubmittedTabSection("Last Week", lastWeekItems);
 
                     flowSubmitted.Controls.Add(new Label { Size = new Size(flowSubmitted.Width - 25, 100), Text = "" });
                 });
@@ -515,162 +488,142 @@ namespace OutlookAddIn1
             }
         }
 
-        // ✅ NEW: Helper class for grouped meetings
-        private class GroupedMeeting
+        // Unified wrapper: one entry per unique meeting in the submitted tab,
+        // regardless of whether it is submitted (possibly multi-program) or ignored.
+        private class SubmittedTabItem
         {
-            public string GlobalId { get; set; }
+            public bool IsIgnored { get; set; }
             public List<MeetingRecord> Records { get; set; }
+            public DateTime StartTorontoTime => Records[0].StartTorontoTime;
         }
 
-        // ✅ NEW: Helper to display submitted meetings grouped by GlobalId
-        private void AddSubmittedMeetingSection(string title, List<GroupedMeeting> groupedMeetings)
+        // Renders one date-bucket section (Today / Yesterday / Last Week) for the
+        // submitted tab. Submitted and ignored cards are interleaved, sorted by time.
+        private void AddSubmittedTabSection(string title, List<SubmittedTabItem> items)
         {
             int w = flowSubmitted.Width - 25;
-            
+
+            // ── shared layout constants (identical to unsubmitted cards) ──────
+            const int subjectY  = 5;
+            const int subjectH  = 24;
+            const int timeY     = 30;
+            const int timeH     = 20;
+            const int infoY     = 52;
+            const int infoH     = 18;
+            const int btnY      = 73;
+            const int btnH      = 27;
+            const int btnGap    = 5;
+            int panelHeight     = btnY + btnH + 16;   // extra clearance for border/DPI
+
             flowSubmitted.Controls.Add(new Label
             {
-                Text = $"{title} ({groupedMeetings.Count})",
-                Font = new Font("Segoe UI", 11, FontStyle.Bold),
-                Size = new Size(w, 30),
-                ForeColor = Color.FromArgb(0, 150, 0),
+                Text      = $"{title} ({items.Count})",
+                Font      = new Font("Segoe UI", 11, FontStyle.Bold),
+                Size      = new Size(w, 30),
+                ForeColor = Color.FromArgb(0, 120, 212),
                 TextAlign = ContentAlignment.MiddleLeft
             });
 
-            foreach (var group in groupedMeetings)
+            foreach (var item in items)
             {
-                var records = group.Records;
-                var firstRecord = records[0];
+                var first = item.Records[0];
+                int bw = (w - 15 - btnGap) / 2;
 
                 var p = new Panel
                 {
-                    Size = new Size(w, 80),  // ✅ REDUCED: No Un-Ignore button, just Cancel Submit
+                    Size        = new Size(w, panelHeight),
                     BorderStyle = BorderStyle.FixedSingle,
-                    BackColor = Color.FromArgb(245, 255, 245),
-                    Margin = new Padding(0, 0, 0, 6)
+                    BackColor   = Color.FromArgb(250, 250, 250),
+                    Margin      = new Padding(0, 0, 0, 6)
                 };
 
+                // Subject
                 p.Controls.Add(new Label
                 {
-                    Text = firstRecord.Subject,
-                    Font = new Font("Segoe UI", 9, FontStyle.Bold),
-                    Location = new Point(5, 5),
-                    Size = new Size(w - 15, 24),
+                    Text         = first.Subject,
+                    Font         = new Font("Segoe UI", 9, FontStyle.Bold),
+                    Location     = new Point(5, subjectY),
+                    Size         = new Size(w - 15, subjectH),
                     AutoEllipsis = true
                 });
 
+                // Date / duration
                 p.Controls.Add(new Label
                 {
-                    Text = $"{firstRecord.StartTorontoTime:MMM dd, HH:mm} ({(firstRecord.EndUtc - firstRecord.StartUtc).TotalHours:F1} hrs)",
-                    Font = new Font("Segoe UI", 8),
-                    Location = new Point(5, 30),
-                    Size = new Size(w - 15, 20),
+                    Text      = $"{first.StartTorontoTime:MMM dd, HH:mm} ({(first.EndUtc - first.StartUtc).TotalHours:F1} hrs)",
+                    Font      = new Font("Segoe UI", 8),
+                    Location  = new Point(5, timeY),
+                    Size      = new Size(w - 15, timeH),
                     ForeColor = Color.FromArgb(100, 100, 100)
                 });
 
-                // ✅ NEW: Show all programs for this meeting
-                string programsText = records.Count > 1
-                    ? $"Programs: {string.Join(", ", records.Select(r => $"{r.ProgramCode}"))}"
-                    : $"Program: {firstRecord.ProgramCode}";
-                
-                p.Controls.Add(new Label
+                // Info line: program(s) for submitted, status label for ignored
+                if (item.IsIgnored)
                 {
-                    Text = programsText,
-                    Font = new Font("Segoe UI", 8),
-                    Location = new Point(5, 51),
-                    Size = new Size(w - 15, 18),
-                    ForeColor = Color.FromArgb(100, 100, 100),
-                    AutoEllipsis = true
-                });
-
-                // ✅ FIX: Only show Cancel Submit button (records are submitted, not ignored)
-                var btnCancel = new Button
+                    p.Controls.Add(new Label
+                    {
+                        Text      = "Ignored",
+                        Font      = new Font("Segoe UI", 8),
+                        Location  = new Point(5, infoY),
+                        Size      = new Size(w - 15, infoH),
+                        ForeColor = Color.FromArgb(150, 0, 0)
+                    });
+                }
+                else
                 {
-                    Text = "Cancel Submit",
-                    Location = new Point(5, 51),
-                    Size = new Size(w - 15, 27),
-                    BackColor = Color.FromArgb(220, 100, 100),
-                    ForeColor = Color.White,
-                    FlatStyle = FlatStyle.Flat,
-                    Font = new Font("Segoe UI", 8, FontStyle.Bold)
-                };
-                btnCancel.FlatAppearance.BorderSize = 0;
-                // ✅ Pass ALL records for this meeting so all can be cancelled
-                var recordsToCancel = records; // Capture for closure
-                btnCancel.Click += async (s, e) => await CancelSubmissionAsync(recordsToCancel);
+                    string programsText = item.Records.Count > 1
+                        ? $"Programs: {string.Join(", ", item.Records.Select(r => r.ProgramCode))}"
+                        : $"Program: {first.ProgramCode} | Activity: {first.ActivityCode}";
 
-                p.Controls.Add(btnCancel);
-                flowSubmitted.Controls.Add(p);
-            }
+                    p.Controls.Add(new Label
+                    {
+                        Text         = programsText,
+                        Font         = new Font("Segoe UI", 8),
+                        Location     = new Point(5, infoY),
+                        Size         = new Size(w - 15, infoH),
+                        ForeColor    = Color.FromArgb(100, 100, 100),
+                        AutoEllipsis = true
+                    });
+                }
 
-            flowSubmitted.Controls.Add(new Label { Size = new Size(w, 10) });
-        }
-
-        // ✅ NEW: Helper to display ignored meetings
-        private void AddIgnoredMeetingSection(string title, List<MeetingRecord> ignoredMeetings)
-        {
-            int w = flowSubmitted.Width - 25;
-            
-            flowSubmitted.Controls.Add(new Label
-            {
-                Text = $"{title} ({ignoredMeetings.Count})",
-                Font = new Font("Segoe UI", 11, FontStyle.Bold),
-                Size = new Size(w, 30),
-                ForeColor = Color.FromArgb(128, 128, 128),  // Gray for ignored
-                TextAlign = ContentAlignment.MiddleLeft
-            });
-
-            foreach (var meeting in ignoredMeetings)
-            {
-                var p = new Panel
+                // Buttons
+                if (item.IsIgnored)
                 {
-                    Size = new Size(w, 80),
-                    BorderStyle = BorderStyle.FixedSingle,
-                    BackColor = Color.FromArgb(240, 240, 240),  // Light gray background
-                    Margin = new Padding(0, 0, 0, 6)
-                };
-
-                p.Controls.Add(new Label
+                    // Ignored card: Un-Ignore only (full width)
+                    var btnUnignore = new Button
+                    {
+                        Text      = "Un-Ignore",
+                        Location  = new Point(5, btnY),
+                        Size      = new Size(w - 15, btnH),
+                        BackColor = Color.FromArgb(220, 220, 220),
+                        ForeColor = Color.FromArgb(60, 60, 60),
+                        FlatStyle = FlatStyle.Flat,
+                        Font      = new Font("Segoe UI", 8)
+                    };
+                    btnUnignore.FlatAppearance.BorderSize = 0;
+                    var capturedItem = item;
+                    btnUnignore.Click += async (s, e) => await CancelIgnoreSubmissionAsync(capturedItem.Records[0]);
+                    p.Controls.Add(btnUnignore);
+                }
+                else
                 {
-                    Text = meeting.Subject,
-                    Font = new Font("Segoe UI", 9, FontStyle.Bold),
-                    Location = new Point(5, 5),
-                    Size = new Size(w - 15, 24),
-                    AutoEllipsis = true
-                });
+                    // Submitted card: Cancel Submit (full width)
+                    var btnCancel = new Button
+                    {
+                        Text      = "Cancel Submit",
+                        Location  = new Point(5, btnY),
+                        Size      = new Size(w - 15, btnH),
+                        BackColor = Color.FromArgb(220, 100, 100),
+                        ForeColor = Color.White,
+                        FlatStyle = FlatStyle.Flat,
+                        Font      = new Font("Segoe UI", 8, FontStyle.Bold)
+                    };
+                    btnCancel.FlatAppearance.BorderSize = 0;
+                    var recordsToCancel = item.Records;
+                    btnCancel.Click += async (s, e) => await CancelSubmissionAsync(recordsToCancel);
+                    p.Controls.Add(btnCancel);
+                }
 
-                p.Controls.Add(new Label
-                {
-                    Text = $"{meeting.StartTorontoTime:MMM dd, HH:mm} ({(meeting.EndUtc - meeting.StartUtc).TotalHours:F1} hrs)",
-                    Font = new Font("Segoe UI", 8),
-                    Location = new Point(5, 30),
-                    Size = new Size(w - 15, 20),
-                    ForeColor = Color.FromArgb(100, 100, 100)
-                });
-
-                p.Controls.Add(new Label
-                {
-                    Text = "(Ignored - will not appear in submissions)",
-                    Font = new Font("Segoe UI", 8),
-                    Location = new Point(5, 51),
-                    Size = new Size(w - 15, 18),
-                    ForeColor = Color.FromArgb(150, 0, 0)  // Red for ignored status
-                });
-
-                // ✅ Only show Un-Ignore button (no Cancel Submit for ignored items)
-                var btnUnignore = new Button
-                {
-                    Text = "Un-Ignore",
-                    Location = new Point(5, 51),
-                    Size = new Size(w - 15, 27),
-                    BackColor = Color.FromArgb(100, 150, 200),
-                    ForeColor = Color.White,
-                    FlatStyle = FlatStyle.Flat,
-                    Font = new Font("Segoe UI", 8, FontStyle.Bold)
-                };
-                btnUnignore.FlatAppearance.BorderSize = 0;
-                btnUnignore.Click += async (s, e) => await CancelIgnoreSubmissionAsync(meeting);
-
-                p.Controls.Add(btnUnignore);
                 flowSubmitted.Controls.Add(p);
             }
 
@@ -1729,7 +1682,8 @@ namespace OutlookAddIn1
 
             // submitted buttons sit one row lower (time → program → buttons)
             int btnY        = isSubmitted ? programY + programH + 3 : btnY_base;
-            int panelHeight = btnY + btnH + 6;
+            // submitted gets more bottom clearance: border + DPI rounding can clip the last row
+            int panelHeight = btnY + btnH + (isSubmitted ? 16 : 6);
 
             // header colour differs so the two tabs are visually distinct;
             // everything else (panel bg, fonts, sizes) is identical

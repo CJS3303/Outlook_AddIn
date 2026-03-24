@@ -60,9 +60,9 @@ namespace OutlookAddIn1
         private double[] _dailyHours;
         private string[] _dayLabels;
         private double _lastWeekTotal = 0;
-        private bool _isInitialized = false;
+        private bool _isInitialized = false;  // UI controls created
+        private bool _dataLoaded = false;      // initial data fetch done
         private bool _isDisposed = false;
-        // _dataLoaded consolidated into _isInitialized - one flag is sufficient
 
         // Cache for unsubmitted meetings
         private List<MeetingRecord> _cachedUnsubmittedMeetings = null;
@@ -81,8 +81,9 @@ namespace OutlookAddIn1
         {
             base.OnVisibleChanged(e);
             if (_isDisposed) return;
-            if (this.Visible && !_isInitialized)
+            if (this.Visible && !_dataLoaded)
             {
+                _dataLoaded = true;
                 _ = LoadDataAsync();
             }
         }
@@ -1527,8 +1528,9 @@ namespace OutlookAddIn1
                     items.Sort("[Start]", false);
                     items.IncludeRecurrences = true;
 
-                    var startDate = DateTime.Now.AddDays(-7);
-                    var endDate = DateTime.Now.AddDays(1);
+                    // Use Today (midnight) not Now so morning meetings 7 days ago aren't cut off
+                    var startDate = DateTime.Today.AddDays(-7);
+                    var endDate = DateTime.Today.AddDays(1);
                     var filter = $"[Start] >= '{startDate:g}' AND [Start] <= '{endDate:g}'";
                     filteredItems = items.Restrict(filter);
 
@@ -1542,7 +1544,13 @@ namespace OutlookAddIn1
                             appt = filteredItems[i] as Microsoft.Office.Interop.Outlook.AppointmentItem;
                             if (appt == null) continue;
 
-                            var globalId = appt.GlobalAppointmentID ?? string.Empty;
+                            // GlobalAppointmentID can throw for certain non-recurring appointments;
+                            // fall back to EntryID so they aren't silently dropped
+                            string globalId = "";
+                            try { globalId = appt.GlobalAppointmentID ?? ""; } catch { }
+                            if (string.IsNullOrWhiteSpace(globalId))
+                                globalId = appt.EntryID ?? "";
+
                             var apptStartUtc = appt.StartUTC;
                             var recurrenceState = appt.RecurrenceState;
 
@@ -1555,6 +1563,7 @@ namespace OutlookAddIn1
                             var apptStartTorontoTime = TimeZoneInfo.ConvertTimeFromUtc(apptStartUtc, torontoTz);
                             var compositeKey = $"{globalId}|{apptStartTorontoTime:yyyy-MM-dd}";
 
+                            // Skip if we have no identifier at all, or already submitted/ignored
                             if (string.IsNullOrWhiteSpace(globalId) || submittedOrIgnoredKeys.Contains(compositeKey))
                             {
                                 continue;
@@ -1643,10 +1652,10 @@ namespace OutlookAddIn1
                     _cacheExpiry = DateTime.Now.AddMinutes(2);
                 }
 
-                // Group by date categories (do this on background thread)
+                // Group by date categories
                 var today = DateTime.Today;
                 var yesterday = today.AddDays(-1);
-                var lastWeekStart = today.AddDays(-7);
+                var lastWeekStart = today.AddDays(-7); // matches the fetch window (midnight, 7 days ago)
 
                 var todayMeetings = unsubmittedMeetings.Where(m => m.StartTorontoTime.Date == today).OrderBy(m => m.StartTorontoTime).ToList();
                 var yesterdayMeetings = unsubmittedMeetings.Where(m => m.StartTorontoTime.Date == yesterday).OrderBy(m => m.StartTorontoTime).ToList();
@@ -1699,22 +1708,38 @@ namespace OutlookAddIn1
             }
         }
 
-        // ✅ CONSOLIDATED: Single method for both submitted and unsubmitted sections
+        // Shared card layout for both submitted and unsubmitted sections.
+        // Submitted adds one extra "Program | Activity" line between the time and buttons,
+        // but every other measurement (fonts, colors, gaps, button style) is identical.
         private void AddMeetingSection(string title, List<MeetingRecord> meetings, bool isSubmitted = false)
         {
             var flowPanel = isSubmitted ? flowSubmitted : flowUnsubmitted;
             int w = flowPanel.Width - 25;
-            
-            // Colors and styles
+
+            // ── shared constants (match unsubmitted exactly) ──────────────────
+            const int subjectY    = 5;
+            const int subjectH    = 24;
+            const int timeY       = 30;
+            const int timeH       = 20;
+            const int programY    = 52;   // only used when isSubmitted
+            const int programH    = 18;
+            const int btnY_base   = 53;   // unsubmitted: buttons start here
+            const int btnH        = 27;
+            const int btnGap      = 5;    // gap between the two buttons
+
+            // submitted buttons sit one row lower (time → program → buttons)
+            int btnY        = isSubmitted ? programY + programH + 3 : btnY_base;
+            int panelHeight = btnY + btnH + 6;
+
+            // header colour differs so the two tabs are visually distinct;
+            // everything else (panel bg, fonts, sizes) is identical
             var headerColor = isSubmitted ? Color.FromArgb(0, 150, 0) : Color.FromArgb(0, 120, 212);
-            var panelColor = isSubmitted ? Color.FromArgb(245, 255, 245) : Color.FromArgb(250, 250, 250);
-            var panelHeight = isSubmitted ? 110 : 85;
-            
+
             flowPanel.Controls.Add(new Label
             {
-                Text = $"{title} ({meetings.Count})",
-                Font = new Font("Segoe UI", 11, FontStyle.Bold),
-                Size = new Size(w, 30),
+                Text      = $"{title} ({meetings.Count})",
+                Font      = new Font("Segoe UI", 11, FontStyle.Bold),
+                Size      = new Size(w, 30),
                 ForeColor = headerColor,
                 TextAlign = ContentAlignment.MiddleLeft
             });
@@ -1723,73 +1748,74 @@ namespace OutlookAddIn1
             {
                 var p = new Panel
                 {
-                    Size = new Size(w, panelHeight),
+                    Size        = new Size(w, panelHeight),
                     BorderStyle = BorderStyle.FixedSingle,
-                    BackColor = panelColor,
-                    Margin = new Padding(0, 0, 0, 6)
+                    BackColor   = Color.FromArgb(250, 250, 250),   // same as unsubmitted
+                    Margin      = new Padding(0, 0, 0, 6)
                 };
 
+                // Subject
                 p.Controls.Add(new Label
                 {
-                    Text = m.Subject,
-                    Font = new Font("Segoe UI", 9, FontStyle.Bold),
-                    Location = new Point(5, 5),
-                    Size = new Size(w - 15, 24),
+                    Text        = m.Subject,
+                    Font        = new Font("Segoe UI", 9, FontStyle.Bold),
+                    Location    = new Point(5, subjectY),
+                    Size        = new Size(w - 15, subjectH),
                     AutoEllipsis = true
                 });
 
+                // Date / duration
                 p.Controls.Add(new Label
                 {
-                    Text = $"{m.StartTorontoTime:MMM dd, HH:mm} ({(m.EndUtc - m.StartUtc).TotalHours:F1} hrs)",
-                    Font = new Font("Segoe UI", 8),
-                    Location = new Point(5, 30),
-                    Size = new Size(w - 15, 20),
+                    Text      = $"{m.StartTorontoTime:MMM dd, HH:mm} ({(m.EndUtc - m.StartUtc).TotalHours:F1} hrs)",
+                    Font      = new Font("Segoe UI", 8),
+                    Location  = new Point(5, timeY),
+                    Size      = new Size(w - 15, timeH),
                     ForeColor = Color.FromArgb(100, 100, 100)
                 });
 
-                // Show program info on submitted items, not on unsubmitted
+                // Program info (submitted only) — same font/colour as the time label
                 if (isSubmitted)
                 {
                     p.Controls.Add(new Label
                     {
-                        Text = $"Program: {m.ProgramCode} | Activity: {m.ActivityCode}",
-                        Font = new Font("Segoe UI", 8),
-                        Location = new Point(5, 51),
-                        Size = new Size(w - 15, 18),
-                        ForeColor = Color.FromArgb(100, 100, 100),
+                        Text         = $"Program: {m.ProgramCode} | Activity: {m.ActivityCode}",
+                        Font         = new Font("Segoe UI", 8),
+                        Location     = new Point(5, programY),
+                        Size         = new Size(w - 15, programH),
+                        ForeColor    = Color.FromArgb(100, 100, 100),
                         AutoEllipsis = true
                     });
                 }
 
-                int bw = (w - 20) / 2;
-                
+                // Buttons — same size, same style, same gap
+                int bw = (w - 15 - btnGap) / 2;
+
                 if (isSubmitted)
                 {
-                    // Submitted tab: Cancel Submit & Un-Ignore buttons
                     var btnCancel = new Button
                     {
-                        Text = "Cancel Submit",
-                        Location = new Point(5, 72),
-                        Size = new Size(bw, 27),
+                        Text      = "Cancel Submit",
+                        Location  = new Point(5, btnY),
+                        Size      = new Size(bw, btnH),
                         BackColor = Color.FromArgb(220, 100, 100),
                         ForeColor = Color.White,
                         FlatStyle = FlatStyle.Flat,
-                        Font = new Font("Segoe UI", 8, FontStyle.Bold)
+                        Font      = new Font("Segoe UI", 8, FontStyle.Bold)
                     };
                     btnCancel.FlatAppearance.BorderSize = 0;
-                    // ✅ FIX: Capture the list properly for async handler
                     var recordsToCancel = meetings;
                     btnCancel.Click += async (s, e) => await CancelSubmissionAsync(recordsToCancel);
 
                     var btnUnignore = new Button
                     {
-                        Text = "Un-Ignore",
-                        Location = new Point(10 + bw, 72),
-                        Size = new Size(bw, 27),
-                        BackColor = Color.FromArgb(200, 200, 200),
+                        Text      = "Un-Ignore",
+                        Location  = new Point(5 + bw + btnGap, btnY),
+                        Size      = new Size(bw, btnH),
+                        BackColor = Color.FromArgb(220, 220, 220),
                         ForeColor = Color.FromArgb(60, 60, 60),
                         FlatStyle = FlatStyle.Flat,
-                        Font = new Font("Segoe UI", 8)
+                        Font      = new Font("Segoe UI", 8)
                     };
                     btnUnignore.FlatAppearance.BorderSize = 0;
                     btnUnignore.Click += async (s, e) => await CancelIgnoreSubmissionAsync(m);
@@ -1798,36 +1824,35 @@ namespace OutlookAddIn1
                 }
                 else
                 {
-                    // Unsubmitted tab: Submit & Ignore buttons
                     var btnSubmit = new Button
                     {
-                        Text = "Submit",
-                        Location = new Point(5, 53),
-                        Size = new Size(bw, 27),
+                        Text      = "Submit",
+                        Location  = new Point(5, btnY),
+                        Size      = new Size(bw, btnH),
                         BackColor = Color.FromArgb(0, 120, 212),
                         ForeColor = Color.White,
                         FlatStyle = FlatStyle.Flat,
-                        Font = new Font("Segoe UI", 8, FontStyle.Bold)
+                        Font      = new Font("Segoe UI", 8, FontStyle.Bold)
                     };
                     btnSubmit.FlatAppearance.BorderSize = 0;
                     btnSubmit.Click += async (s, e) => await SubmitMeetingAsync(m);
 
                     var btnIgnore = new Button
                     {
-                        Text = "Ignore",
-                        Location = new Point(10 + bw, 53),
-                        Size = new Size(bw, 27),
+                        Text      = "Ignore",
+                        Location  = new Point(5 + bw + btnGap, btnY),
+                        Size      = new Size(bw, btnH),
                         BackColor = Color.FromArgb(220, 220, 220),
                         ForeColor = Color.FromArgb(60, 60, 60),
                         FlatStyle = FlatStyle.Flat,
-                        Font = new Font("Segoe UI", 8)
+                        Font      = new Font("Segoe UI", 8)
                     };
                     btnIgnore.FlatAppearance.BorderSize = 0;
                     btnIgnore.Click += (s, e) => IgnoreMeeting(m, p);
 
                     p.Controls.AddRange(new Control[] { btnSubmit, btnIgnore });
                 }
-                
+
                 flowPanel.Controls.Add(p);
             }
 

@@ -1,0 +1,2592 @@
+﻿using System;
+using System.Drawing;
+using System.Linq;
+using System.Runtime.InteropServices;
+using System.Windows.Forms;
+using System.Threading.Tasks;
+using Microsoft.Data.SqlClient;
+using System.Data;
+using System.Configuration;
+using System.Collections.Generic;
+using Outlook = Microsoft.Office.Interop.Outlook;
+
+namespace OutlookAddIn1
+{
+    [System.ComponentModel.DesignerCategory("Code")]
+    public class ManageTimesheetPane : UserControl
+    {
+        // Dashboard tab controls
+        private Label lblTitle;
+        private Label lblWeekRange;
+        private Label lblTotalHours;
+        private Label lblHoursLabel;
+        private Panel pnlChart;
+        private Button btnPrevWeek;
+        private Button btnNextWeek;
+        private Button btnRefresh;
+        private Label lblWeeklyTarget;
+        private Label lblLastWeekComparison;
+
+        // Tab control
+        private TabControl tabControl;
+        private TabPage tabDashboard;
+        private TabPage tabSubmitted;  // ✅ NEW: Submitted tab
+        private TabPage tabUnsubmitted;
+
+        // Submitted tab controls - ✅ NEW
+        private FlowLayoutPanel flowSubmitted;
+        private Button btnRefreshSubmitted;
+        private Font _fontSubmittedTitle;
+
+        // Unsubmitted tab controls
+        private FlowLayoutPanel flowUnsubmitted;
+        private Button btnRefreshUnsubmitted;
+
+        // Font fields
+        private Font _fontTitle;
+        private Font _fontWeekRange;
+        private Font _fontTotalHours;
+        private Font _fontHoursLabel;
+        private Font _fontWeeklyTarget;
+        private Font _fontLastWeekComparison;
+        private Font _fontUnsubmittedTitle;
+        private Font _fontSectionHeader;
+        private Font _fontSubject;
+        private Font _fontTime;
+        private Font _fontButton;
+        private Font _fontButtonBold;
+
+        private DateTime _currentWeekStart;
+        private double[] _dailyHours;
+        private string[] _dayLabels;
+        private double _lastWeekTotal = 0;
+        private bool _isInitialized = false;
+        private bool _isDisposed = false;
+        // _dataLoaded consolidated into _isInitialized - one flag is sufficient
+
+        // Cache for unsubmitted meetings
+        private List<MeetingRecord> _cachedUnsubmittedMeetings = null;
+        private DateTime _cacheExpiry = DateTime.MinValue;
+
+        public ManageTimesheetPane()
+        {
+            this.AutoScaleMode = AutoScaleMode.None;
+            InitializeComponent();
+            _currentWeekStart = GetMondayOfCurrentWeek(DateTime.Now);
+            _dailyHours = new double[7];
+            _dayLabels = new[] { "Mo", "Tu", "We", "Th", "Fr", "Sa", "Su" };
+        }
+
+        protected override void OnVisibleChanged(EventArgs e)
+        {
+            base.OnVisibleChanged(e);
+            if (_isDisposed) return;
+            if (this.Visible && !_isInitialized)
+            {
+                _ = LoadDataAsync();
+            }
+        }
+
+        private async Task LoadDataAsync()
+        {
+            try
+            {
+                await LoadWeeklyDataAsync();
+                await LoadSubmittedMeetingsAsync();
+                await LoadUnsubmittedMeetingsAsync();
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"LoadDataAsync failed: {ex.Message}");
+            }
+        }
+
+        private void InitializeComponent()
+        {
+            if (_isInitialized) return;
+
+            this.SuspendLayout();
+
+            tabControl = new TabControl { Dock = DockStyle.Fill };
+
+            tabDashboard = new TabPage("Dashboard");
+            InitializeDashboardTab();
+
+            tabSubmitted = new TabPage("Submitted Items");  // ✅ NEW
+            InitializeSubmittedTab();
+
+            tabUnsubmitted = new TabPage("Unsubmitted Items");
+            InitializeUnsubmittedTab();
+
+            tabControl.TabPages.Add(tabDashboard);
+            tabControl.TabPages.Add(tabSubmitted);  // ✅ NEW
+            tabControl.TabPages.Add(tabUnsubmitted);
+
+            this.Controls.Add(tabControl);
+            this.Name = "ManageTimesheetPane";
+            this.Dock = DockStyle.Fill;
+
+            _isInitialized = true;
+            this.ResumeLayout(false);
+        }
+
+        private void InitializeDashboardTab()
+        {
+            _fontTitle = new Font("Segoe UI", 14, FontStyle.Bold);
+            _fontWeekRange = new Font("Segoe UI", 10);
+            _fontTotalHours = new Font("Segoe UI", 36, FontStyle.Bold);
+            _fontHoursLabel = new Font("Segoe UI", 12);
+            _fontWeeklyTarget = new Font("Segoe UI", 9);
+            _fontLastWeekComparison = new Font("Segoe UI", 9);
+
+            lblTitle = new Label
+            {
+                Text = "Weekly Hours",
+                Font = _fontTitle,
+                Location = new Point(15, 15),
+                Size = new Size(320, 30),
+                TextAlign = ContentAlignment.MiddleLeft
+            };
+
+            btnPrevWeek = new Button { Text = "◀", Location = new Point(15, 50), Size = new Size(30, 25) };
+            btnPrevWeek.Click += BtnPrevWeek_Click;
+
+            lblWeekRange = new Label
+            {
+                Text = "Loading...",
+                Font = _fontWeekRange,
+                Location = new Point(50, 50),
+                Size = new Size(220, 25),
+                TextAlign = ContentAlignment.MiddleCenter
+            };
+
+            btnNextWeek = new Button { Text = "▶", Location = new Point(275, 50), Size = new Size(30, 25) };
+            btnNextWeek.Click += BtnNextWeek_Click;
+
+            btnRefresh = new Button { Text = "↻", Location = new Point(310, 50), Size = new Size(30, 25) };
+            btnRefresh.Click += BtnRefresh_Click;
+
+            pnlChart = new Panel
+            {
+                Location = new Point(15, 90),
+                Size = new Size(310, 180),
+                BorderStyle = BorderStyle.FixedSingle
+            };
+            pnlChart.Paint += PnlChart_Paint;
+
+            lblTotalHours = new Label
+            {
+                Text = "0.0",
+                Font = _fontTotalHours,
+                Location = new Point(15, 285),
+                Size = new Size(180, 60),
+                TextAlign = ContentAlignment.MiddleLeft,
+                ForeColor = Color.FromArgb(0, 120, 212)
+            };
+
+            lblHoursLabel = new Label
+            {
+                Text = "hours",
+                Font = _fontHoursLabel,
+                Location = new Point(200, 305),
+                Size = new Size(125, 25),
+                TextAlign = ContentAlignment.MiddleLeft,
+                ForeColor = Color.Gray
+            };
+
+            lblWeeklyTarget = new Label
+            {
+                Text = "Target: 0.0% of 32.5 hours",
+                Font = _fontWeeklyTarget,
+                Location = new Point(15, 350),
+                Size = new Size(310, 18),
+                TextAlign = ContentAlignment.TopLeft,
+                ForeColor = Color.Gray
+            };
+
+            lblLastWeekComparison = new Label
+            {
+                Text = "Last week: 0.0 hrs\n▲ 0.0 hours more",
+                Font = _fontLastWeekComparison,
+                Location = new Point(15, 370),
+                Size = new Size(310, 40),
+                TextAlign = ContentAlignment.TopLeft,
+                ForeColor = Color.Gray
+            };
+
+            tabDashboard.Controls.AddRange(new Control[]
+            {
+                lblTitle, btnPrevWeek, lblWeekRange, btnNextWeek, btnRefresh,
+                pnlChart, lblTotalHours, lblHoursLabel,
+                lblWeeklyTarget, lblLastWeekComparison
+            });
+        }
+
+        // ✅ Event handler methods for dashboard buttons
+        private async void BtnPrevWeek_Click(object sender, EventArgs e)
+        {
+            _currentWeekStart = _currentWeekStart.AddDays(-7);
+            await LoadWeeklyDataAsync();
+        }
+
+        private async void BtnNextWeek_Click(object sender, EventArgs e)
+        {
+            _currentWeekStart = _currentWeekStart.AddDays(7);
+            await LoadWeeklyDataAsync();
+        }
+
+        private async void BtnRefresh_Click(object sender, EventArgs e)
+        {
+            await LoadWeeklyDataAsync();
+        }
+
+        // ✅ NEW: Initialize Submitted tab
+        private void InitializeSubmittedTab()
+        {
+            _fontSubmittedTitle = new Font("Segoe UI", 14, FontStyle.Bold);
+
+            var lblSubmittedTitle = new Label
+            {
+                Text = "Submitted",
+                Font = _fontSubmittedTitle,
+                Location = new Point(15, 8),
+                Size = new Size(290, 30),
+                TextAlign = ContentAlignment.MiddleLeft
+            };
+
+            btnRefreshSubmitted = new Button
+            {
+                Text = "↻",
+                Location = new Point(305, 8),
+                Size = new Size(35, 25)
+            };
+            btnRefreshSubmitted.Click += async (s, e) => await LoadSubmittedMeetingsAsync();
+
+            flowSubmitted = new FlowLayoutPanel
+            {
+                Location = new Point(15, 45),
+                Size = new Size(325, 640),
+                AutoScroll = true,
+                FlowDirection = FlowDirection.TopDown,
+                WrapContents = false,
+                Padding = new Padding(0, 0, 0, 0)
+            };
+
+            tabSubmitted.Controls.AddRange(new Control[]
+            {
+                lblSubmittedTitle, btnRefreshSubmitted, flowSubmitted
+            });
+        }
+
+        private void InitializeUnsubmittedTab()
+        {
+            _fontUnsubmittedTitle = new Font("Segoe UI", 14, FontStyle.Bold);
+
+            var lblUnsubmittedTitle = new Label
+            {
+                Text = "Unsubmitted",
+                Font = _fontUnsubmittedTitle,
+                Location = new Point(15, 8),
+                Size = new Size(290, 30),
+                TextAlign = ContentAlignment.MiddleLeft
+            };
+
+            btnRefreshUnsubmitted = new Button
+            {
+                Text = "↻",
+                Location = new Point(305, 8),
+                Size = new Size(35, 25)
+            };
+            btnRefreshUnsubmitted.Click += async (s, e) =>
+            {
+                _cachedUnsubmittedMeetings = null;
+                _cacheExpiry = DateTime.MinValue;
+                await LoadUnsubmittedMeetingsAsync();
+            };
+
+            flowUnsubmitted = new FlowLayoutPanel
+            {
+                Location = new Point(15, 45),
+                Size = new Size(325, 640),
+                AutoScroll = true,
+                FlowDirection = FlowDirection.TopDown,
+                WrapContents = false,
+                Padding = new Padding(0, 0, 0, 0)
+            };
+
+            tabUnsubmitted.Controls.AddRange(new Control[]
+            {
+                lblUnsubmittedTitle, btnRefreshUnsubmitted, flowUnsubmitted
+            });
+        }
+
+        // ✅ Load submitted from database (shows: Today, Yesterday, Last Week + Cancel/Un-Ignore buttons)
+        private async Task LoadSubmittedMeetingsAsync()
+        {
+            try
+            {
+                flowSubmitted.Invoke((MethodInvoker)delegate
+                {
+                    flowSubmitted.Controls.Clear();
+                    flowSubmitted.Controls.Add(new Label
+                    {
+                        Text = "Loading submitted events...",
+                        Font = new Font("Segoe UI", 10),
+                        Width = flowSubmitted.Width - 20,
+                        Height = 30,
+                        ForeColor = Color.Gray
+                    });
+                });
+
+                var email = GetCurrentUserEmail();
+                if (string.IsNullOrWhiteSpace(email)) throw new Exception("Unable to determine current user email.");
+
+                var connString = ConfigurationManager.ConnectionStrings["OemsDatabase"]?.ConnectionString;
+                if (string.IsNullOrWhiteSpace(connString)) throw new Exception("Database connection not configured.");
+
+                var submittedMeetings = new List<MeetingRecord>();
+                var ignoredMeetings = new List<MeetingRecord>();
+
+                using (var cn = new SqlConnection(connString))
+                {
+                    await cn.OpenAsync();
+                    
+                    // ✅ Load SUBMITTED records (status = 'submitted')
+                    using (var cmd = new SqlCommand(@"
+                        SELECT DISTINCT global_id, entry_id, subject, start_utc, end_utc,
+                                job_code, activity_code, stage_code, hours_allocated
+                        FROM db_owner.ytimesheet
+                        WHERE user_name = @email AND status = 'submitted'
+                          AND start_utc >= DATEADD(DAY, -30, CAST(GETDATE() AT TIME ZONE 'Eastern Standard Time' AS DATE))
+                        ORDER BY start_utc DESC", cn))
+                    {
+                        cmd.Parameters.Add(new SqlParameter("@email", SqlDbType.NVarChar, 320) { Value = email });
+                        using (var reader = await cmd.ExecuteReaderAsync())
+                        {
+                            while (await reader.ReadAsync())
+                            {
+                                var startTorontoTime = reader["start_utc"] is DateTime s ? s : DateTime.MinValue;
+                                var endTorontoTime = reader["end_utc"] is DateTime e ? e : DateTime.MinValue;
+                                
+                                // ✅ CRITICAL FIX: Database stores Toronto time in start_utc column
+                                // We need to convert it back to UTC for the MeetingRecord
+                                var torontoTz = TimeZoneInfo.FindSystemTimeZoneById("Eastern Standard Time");
+                                var startUtc = TimeZoneInfo.ConvertTimeToUtc(startTorontoTime, torontoTz);
+                                var endUtc = TimeZoneInfo.ConvertTimeToUtc(endTorontoTime, torontoTz);
+                                
+                                submittedMeetings.Add(new MeetingRecord
+                                {
+                                    GlobalId = reader["global_id"] as string ?? "",
+                                    EntryId = reader["entry_id"] as string ?? "",
+                                    Subject = reader["subject"] as string ?? "",
+                                    StartUtc = startUtc,  // ✅ Convert back to UTC
+                                    EndUtc = endUtc,      // ✅ Convert back to UTC
+                                    ProgramCode = reader["job_code"] as string ?? "",
+                                    ActivityCode = reader["activity_code"] as string ?? "",
+                                    StageCode = reader["stage_code"] as string ?? "",
+                                    UserDisplayName = email,
+                                    Status = "submitted"
+                                });
+                            }
+                        }
+                    }
+
+                    // ✅ Load IGNORED records (status = 'ignored')
+                    using (var cmd = new SqlCommand(@"
+                        SELECT DISTINCT global_id, entry_id, subject, start_utc, end_utc
+                        FROM db_owner.ytimesheet
+                        WHERE user_name = @email AND status = 'ignored'
+                          AND start_utc >= DATEADD(DAY, -30, CAST(GETDATE() AT TIME ZONE 'Eastern Standard Time' AS DATE))
+                        ORDER BY start_utc DESC", cn))
+                    {
+                        cmd.Parameters.Add(new SqlParameter("@email", SqlDbType.NVarChar, 320) { Value = email });
+                        using (var reader = await cmd.ExecuteReaderAsync())
+                        {
+                            while (await reader.ReadAsync())
+                            {
+                                var startUtc = reader["start_utc"] is DateTime s ? s : DateTime.MinValue;
+                                ignoredMeetings.Add(new MeetingRecord
+                                {
+                                    GlobalId = reader["global_id"] as string ?? "",
+                                    EntryId = reader["entry_id"] as string ?? "",
+                                    Subject = reader["subject"] as string ?? "",
+                                    StartUtc = startUtc,
+                                    EndUtc = reader["end_utc"] is DateTime e ? e : DateTime.MinValue,
+                                    UserDisplayName = email,
+                                    Status = "ignored"
+                                });
+                            }
+                        }
+                    }
+                }
+
+                // ✅ Group by GlobalId to handle multi-program submissions
+                var groupedSubmitted = submittedMeetings
+                    .GroupBy(m => m.GlobalId)
+                    .Select(g => new GroupedMeeting { GlobalId = g.Key, Records = g.ToList() })
+                    .ToList();
+
+                var today = DateTime.Today;
+                
+                // ✅ Group SUBMITTED by date
+                var todaySubmitted = groupedSubmitted
+                    .Where(g => g.Records[0].StartTorontoTime.Date == today)
+                    .OrderByDescending(g => g.Records[0].StartTorontoTime)
+                    .ToList();
+                
+                var yesterdaySubmitted = groupedSubmitted
+                    .Where(g => g.Records[0].StartTorontoTime.Date == today.AddDays(-1))
+                    .OrderByDescending(g => g.Records[0].StartTorontoTime)
+                    .ToList();
+                
+                var lastWeekSubmitted = groupedSubmitted
+                    .Where(g => g.Records[0].StartTorontoTime.Date >= today.AddDays(-7) && g.Records[0].StartTorontoTime.Date < today.AddDays(-1))
+                    .OrderByDescending(g => g.Records[0].StartTorontoTime)
+                    .ToList();
+
+                // ✅ Group IGNORED by date
+                var todayIgnored = ignoredMeetings
+                    .Where(m => m.StartTorontoTime.Date == today)
+                    .OrderByDescending(m => m.StartTorontoTime)
+                    .ToList();
+                
+                var yesterdayIgnored = ignoredMeetings
+                    .Where(m => m.StartTorontoTime.Date == today.AddDays(-1))
+                    .OrderByDescending(m => m.StartTorontoTime)
+                    .ToList();
+                
+                var lastWeekIgnored = ignoredMeetings
+                    .Where(m => m.StartTorontoTime.Date >= today.AddDays(-7) && m.StartTorontoTime.Date < today.AddDays(-1))
+                    .OrderByDescending(m => m.StartTorontoTime)
+                    .ToList();
+
+                flowSubmitted.Invoke((MethodInvoker)delegate
+                {
+                    flowSubmitted.Controls.Clear();
+                    
+                    if (submittedMeetings.Count == 0 && ignoredMeetings.Count == 0)
+                    {
+                        flowSubmitted.Controls.Add(new Label
+                        {
+                            Text = "No submitted or ignored events found.",
+                            Font = new Font("Segoe UI", 10),
+                            Size = new Size(flowSubmitted.Width - 25, 40),
+                            ForeColor = Color.Gray
+                        });
+                        return;
+                    }
+
+                    // ✅ Display SUBMITTED section
+                    if (submittedMeetings.Count > 0)
+                    {
+                        if (todaySubmitted.Count > 0) AddSubmittedMeetingSection("Today (Submitted)", todaySubmitted);
+                        if (yesterdaySubmitted.Count > 0) AddSubmittedMeetingSection("Yesterday (Submitted)", yesterdaySubmitted);
+                        if (lastWeekSubmitted.Count > 0) AddSubmittedMeetingSection("Last Week (Submitted)", lastWeekSubmitted);
+                    }
+
+                    // ✅ Display IGNORED section (with Un-Ignore buttons)
+                    if (ignoredMeetings.Count > 0)
+                    {
+                        flowSubmitted.Controls.Add(new Label { Size = new Size(flowSubmitted.Width - 25, 20) }); // Spacer
+
+                        if (todayIgnored.Count > 0) AddIgnoredMeetingSection("Today (Ignored)", todayIgnored);
+                        if (yesterdayIgnored.Count > 0) AddIgnoredMeetingSection("Yesterday (Ignored)", yesterdayIgnored);
+                        if (lastWeekIgnored.Count > 0) AddIgnoredMeetingSection("Last Week (Ignored)", lastWeekIgnored);
+                    }
+
+                    flowSubmitted.Controls.Add(new Label { Size = new Size(flowSubmitted.Width - 25, 100), Text = "" });
+                });
+            }
+            catch (Exception ex)
+            {
+                flowSubmitted.Invoke((MethodInvoker)delegate
+                {
+                    flowSubmitted.Controls.Clear();
+                    flowSubmitted.Controls.Add(new Label
+                    {
+                        Text = $"Error: {ex.Message}",
+                        Font = new Font("Segoe UI", 10),
+                        Width = flowSubmitted.Width - 20,
+                        Height = 60,
+                        ForeColor = Color.Red
+                    });
+                });
+            }
+        }
+
+        // ✅ NEW: Helper class for grouped meetings
+        private class GroupedMeeting
+        {
+            public string GlobalId { get; set; }
+            public List<MeetingRecord> Records { get; set; }
+        }
+
+        // ✅ NEW: Helper to display submitted meetings grouped by GlobalId
+        private void AddSubmittedMeetingSection(string title, List<GroupedMeeting> groupedMeetings)
+        {
+            int w = flowSubmitted.Width - 25;
+            
+            flowSubmitted.Controls.Add(new Label
+            {
+                Text = $"{title} ({groupedMeetings.Count})",
+                Font = new Font("Segoe UI", 11, FontStyle.Bold),
+                Size = new Size(w, 30),
+                ForeColor = Color.FromArgb(0, 150, 0),
+                TextAlign = ContentAlignment.MiddleLeft
+            });
+
+            foreach (var group in groupedMeetings)
+            {
+                var records = group.Records;
+                var firstRecord = records[0];
+
+                var p = new Panel
+                {
+                    Size = new Size(w, 80),  // ✅ REDUCED: No Un-Ignore button, just Cancel Submit
+                    BorderStyle = BorderStyle.FixedSingle,
+                    BackColor = Color.FromArgb(245, 255, 245),
+                    Margin = new Padding(0, 0, 0, 6)
+                };
+
+                p.Controls.Add(new Label
+                {
+                    Text = firstRecord.Subject,
+                    Font = new Font("Segoe UI", 9, FontStyle.Bold),
+                    Location = new Point(5, 5),
+                    Size = new Size(w - 15, 24),
+                    AutoEllipsis = true
+                });
+
+                p.Controls.Add(new Label
+                {
+                    Text = $"{firstRecord.StartTorontoTime:MMM dd, HH:mm} ({(firstRecord.EndUtc - firstRecord.StartUtc).TotalHours:F1} hrs)",
+                    Font = new Font("Segoe UI", 8),
+                    Location = new Point(5, 30),
+                    Size = new Size(w - 15, 20),
+                    ForeColor = Color.FromArgb(100, 100, 100)
+                });
+
+                // ✅ NEW: Show all programs for this meeting
+                string programsText = records.Count > 1
+                    ? $"Programs: {string.Join(", ", records.Select(r => $"{r.ProgramCode}"))}"
+                    : $"Program: {firstRecord.ProgramCode}";
+                
+                p.Controls.Add(new Label
+                {
+                    Text = programsText,
+                    Font = new Font("Segoe UI", 8),
+                    Location = new Point(5, 51),
+                    Size = new Size(w - 15, 18),
+                    ForeColor = Color.FromArgb(100, 100, 100),
+                    AutoEllipsis = true
+                });
+
+                // ✅ FIX: Only show Cancel Submit button (records are submitted, not ignored)
+                var btnCancel = new Button
+                {
+                    Text = "Cancel Submit",
+                    Location = new Point(5, 51),
+                    Size = new Size(w - 15, 27),
+                    BackColor = Color.FromArgb(220, 100, 100),
+                    ForeColor = Color.White,
+                    FlatStyle = FlatStyle.Flat,
+                    Font = new Font("Segoe UI", 8, FontStyle.Bold)
+                };
+                btnCancel.FlatAppearance.BorderSize = 0;
+                // ✅ Pass ALL records for this meeting so all can be cancelled
+                var recordsToCancel = records; // Capture for closure
+                btnCancel.Click += async (s, e) => await CancelSubmissionAsync(recordsToCancel);
+
+                p.Controls.Add(btnCancel);
+                flowSubmitted.Controls.Add(p);
+            }
+
+            flowSubmitted.Controls.Add(new Label { Size = new Size(w, 10) });
+        }
+
+        // ✅ NEW: Helper to display ignored meetings
+        private void AddIgnoredMeetingSection(string title, List<MeetingRecord> ignoredMeetings)
+        {
+            int w = flowSubmitted.Width - 25;
+            
+            flowSubmitted.Controls.Add(new Label
+            {
+                Text = $"{title} ({ignoredMeetings.Count})",
+                Font = new Font("Segoe UI", 11, FontStyle.Bold),
+                Size = new Size(w, 30),
+                ForeColor = Color.FromArgb(128, 128, 128),  // Gray for ignored
+                TextAlign = ContentAlignment.MiddleLeft
+            });
+
+            foreach (var meeting in ignoredMeetings)
+            {
+                var p = new Panel
+                {
+                    Size = new Size(w, 80),
+                    BorderStyle = BorderStyle.FixedSingle,
+                    BackColor = Color.FromArgb(240, 240, 240),  // Light gray background
+                    Margin = new Padding(0, 0, 0, 6)
+                };
+
+                p.Controls.Add(new Label
+                {
+                    Text = meeting.Subject,
+                    Font = new Font("Segoe UI", 9, FontStyle.Bold),
+                    Location = new Point(5, 5),
+                    Size = new Size(w - 15, 24),
+                    AutoEllipsis = true
+                });
+
+                p.Controls.Add(new Label
+                {
+                    Text = $"{meeting.StartTorontoTime:MMM dd, HH:mm} ({(meeting.EndUtc - meeting.StartUtc).TotalHours:F1} hrs)",
+                    Font = new Font("Segoe UI", 8),
+                    Location = new Point(5, 30),
+                    Size = new Size(w - 15, 20),
+                    ForeColor = Color.FromArgb(100, 100, 100)
+                });
+
+                p.Controls.Add(new Label
+                {
+                    Text = "(Ignored - will not appear in submissions)",
+                    Font = new Font("Segoe UI", 8),
+                    Location = new Point(5, 51),
+                    Size = new Size(w - 15, 18),
+                    ForeColor = Color.FromArgb(150, 0, 0)  // Red for ignored status
+                });
+
+                // ✅ Only show Un-Ignore button (no Cancel Submit for ignored items)
+                var btnUnignore = new Button
+                {
+                    Text = "Un-Ignore",
+                    Location = new Point(5, 51),
+                    Size = new Size(w - 15, 27),
+                    BackColor = Color.FromArgb(100, 150, 200),
+                    ForeColor = Color.White,
+                    FlatStyle = FlatStyle.Flat,
+                    Font = new Font("Segoe UI", 8, FontStyle.Bold)
+                };
+                btnUnignore.FlatAppearance.BorderSize = 0;
+                btnUnignore.Click += async (s, e) => await CancelIgnoreSubmissionAsync(meeting);
+
+                p.Controls.Add(btnUnignore);
+                flowSubmitted.Controls.Add(p);
+            }
+
+            flowSubmitted.Controls.Add(new Label { Size = new Size(w, 10) });
+        }
+
+        // ✅ Cancel submission - delete timesheet
+        private async Task CancelSubmissionAsync(List<MeetingRecord> meetings)
+        {
+            // ✅ NEW: Accept list of all records for this meeting
+            if (meetings == null || meetings.Count == 0) 
+            {
+                System.Diagnostics.Debug.WriteLine("CancelSubmissionAsync: No meetings provided!");
+                return;
+            }
+
+            var firstMeeting = meetings[0];
+            
+            System.Diagnostics.Debug.WriteLine($"CancelSubmissionAsync: Attempting to cancel {meetings.Count} record(s) for '{firstMeeting.Subject}'");
+            
+            if (MessageBox.Show(
+                meetings.Count > 1
+                    ? $"Cancel submission for {firstMeeting.Subject}?\n\nThis will delete {meetings.Count} program records.\nPrograms: {string.Join(", ", meetings.Select(m => m.ProgramCode))}\n\nThis action cannot be undone."
+                    : $"Cancel submission for {firstMeeting.Subject}?\nProgram: {firstMeeting.ProgramCode}\nThis will remove the timesheet record.",
+                "Cancel Submission", MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes) 
+            {
+                System.Diagnostics.Debug.WriteLine("CancelSubmissionAsync: User cancelled the dialog");
+                return;
+            }
+
+            try
+            {
+                var email = GetCurrentUserEmail();
+                
+                // ✅ CRITICAL FIX: Delete ALL records for this meeting at once
+                int deletedCount = 0;
+                foreach (var record in meetings)
+                {
+                    System.Diagnostics.Debug.WriteLine($"CancelSubmissionAsync: Deleting record - Program:{record.ProgramCode}, GlobalId:{record.GlobalId}");
+                    if (await DbWriter.DeleteTimesheetAsync(record)) 
+                    {
+                        deletedCount++;
+                        System.Diagnostics.Debug.WriteLine($"CancelSubmissionAsync: Successfully deleted 1 record, total: {deletedCount}");
+                    }
+                    else
+                    {
+                        System.Diagnostics.Debug.WriteLine($"CancelSubmissionAsync: Failed to delete record for {record.ProgramCode}");
+                    }
+                }
+
+                if (deletedCount > 0)
+                {
+                    System.Diagnostics.Debug.WriteLine($"CancelSubmissionAsync: Deletion complete, reloading submitted meetings");
+                    MessageBox.Show(
+                        meetings.Count > 1
+                            ? $"Deleted {deletedCount} program record(s) for this meeting."
+                            : $"Deleted {deletedCount} timesheet record.",
+                        "Cancelled");
+                    await LoadSubmittedMeetingsAsync();
+                }
+                else
+                {
+                    System.Diagnostics.Debug.WriteLine("CancelSubmissionAsync: No records were deleted!");
+                    MessageBox.Show("Failed to delete any records.", "Error");
+                }
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"CancelSubmissionAsync: Exception occurred: {ex.Message}");
+                System.Diagnostics.Debug.WriteLine($"CancelSubmissionAsync: Stack trace: {ex.StackTrace}");
+                MessageBox.Show($"Error: {ex.Message}", "Error");
+            }
+        }
+
+        // ✅ Cancel ignore - remove ignored status
+        private async Task CancelIgnoreSubmissionAsync(MeetingRecord meeting)
+        {
+            System.Diagnostics.Debug.WriteLine($"CancelIgnoreSubmissionAsync: Attempting to un-ignore '{meeting.Subject}'");
+            
+            if (MessageBox.Show($"Remove ignore status from {meeting.Subject}?\nThis will allow it to appear in Unsubmitted list.",
+                "Un-Ignore Meeting", MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes) 
+            {
+                System.Diagnostics.Debug.WriteLine("CancelIgnoreSubmissionAsync: User cancelled the dialog");
+                return;
+            }
+
+            try
+            {
+                var email = GetCurrentUserEmail();
+                var tempRec = new MeetingRecord
+                {
+                    GlobalId = meeting.GlobalId,
+                    EntryId = meeting.EntryId,
+                    StartUtc = meeting.StartUtc,
+                    UserDisplayName = email
+                };
+
+                System.Diagnostics.Debug.WriteLine($"CancelIgnoreSubmissionAsync: Calling DbWriter.CancelIgnoreTimesheetAsync");
+                if (await DbWriter.CancelIgnoreTimesheetAsync(tempRec))
+                {
+                    System.Diagnostics.Debug.WriteLine("CancelIgnoreSubmissionAsync: Successfully un-ignored, reloading");
+                    MessageBox.Show("Ignore status removed!", "Un-Ignored");
+                    await LoadSubmittedMeetingsAsync();
+                    await LoadUnsubmittedMeetingsAsync();
+                }
+                else
+                {
+                    System.Diagnostics.Debug.WriteLine("CancelIgnoreSubmissionAsync: DbWriter.CancelIgnoreTimesheetAsync returned false");
+                    MessageBox.Show("Failed to remove ignore status.", "Error");
+                }
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"CancelIgnoreSubmissionAsync: Exception occurred: {ex.Message}");
+                System.Diagnostics.Debug.WriteLine($"CancelIgnoreSubmissionAsync: Stack trace: {ex.StackTrace}");
+                MessageBox.Show($"Error: {ex.Message}", "Error");
+            }
+        }
+
+        private async Task SubmitMeetingAsync(MeetingRecord meeting)
+        {
+            Outlook.NameSpace ns = null;
+            Outlook.AppointmentItem appt = null;
+            Outlook.UserProperties ups = null;
+
+            try
+            {
+                var email = GetCurrentUserEmail();
+                if (string.IsNullOrWhiteSpace(email))
+                {
+                    MessageBox.Show("Unable to determine current user email.", "Error");
+                    return;
+                }
+
+                var tempRec = new MeetingRecord
+                {
+                    GlobalId = meeting.GlobalId,
+                    EntryId = meeting.EntryId,
+                    StartUtc = meeting.StartUtc,
+                    UserDisplayName = email
+                };
+
+                // ✅ Get ALL existing timesheets for this meeting (handles multi-program)
+                var existingTimesheets = await DbWriter.GetAllTimesheetsForMeetingAsync(tempRec);
+
+                if (existingTimesheets != null && existingTimesheets.Count > 0)
+                {
+                    if (existingTimesheets.Count > 1)
+                    {
+                        // Multi-program timesheet exists
+                        var torontoTime = existingTimesheets[0].LastModifiedTorontoTime;
+                        var programList = string.Join("\n", existingTimesheets.Select(t =>
+                            $"  • {t.ProgramCode} ({(t.HoursAllocated ?? (t.EndUtc - t.StartUtc).TotalHours):F2} hrs)"));
+
+                        var dialogResult = MessageBox.Show(
+                            $"Multi-program timesheet already submitted for this meeting.\n\n" +
+                            $"Previously submitted:\n{programList}\n" +
+                            $"Submitted: {torontoTime:yyyy-MM-dd HH:mm} (Toronto Time)\n\n" +
+                            $"Would you like to re-submit this timesheet?\n" +
+                            $"(This will DELETE the existing entries and allow you to create new ones)",
+                            "Multi-Program Timesheet Exists",
+                            MessageBoxButtons.YesNo,
+                            MessageBoxIcon.Question);
+
+                        if (dialogResult != DialogResult.Yes)
+                            return;
+
+                        foreach (var existing in existingTimesheets)
+                            await DbWriter.DeleteTimesheetAsync(existing);
+                    }
+                    else
+                    {
+                        // Single-program timesheet exists
+                        var existingTimesheet = existingTimesheets[0];
+                        var torontoTime = existingTimesheet.LastModifiedTorontoTime;
+
+                        var dialogResult = MessageBox.Show(
+                            $"Timesheet already submitted for this meeting.\n\n" +
+                            $"Previously submitted:\n" +
+                            $"Program:  {existingTimesheet.ProgramCode}\n" +
+                            $"Activity: {existingTimesheet.ActivityCode}\n" +
+                            $"Stage:    {existingTimesheet.StageCode}\n" +
+                            $"Submitted: {torontoTime:yyyy-MM-dd HH:mm} (Toronto Time)\n\n" +
+                            $"Would you like to edit this timesheet?",
+                            "Timesheet Already Submitted",
+                            MessageBoxButtons.YesNo,
+                            MessageBoxIcon.Question);
+
+                        if (dialogResult != DialogResult.Yes)
+                            return;
+
+                        await DbWriter.DeleteTimesheetAsync(existingTimesheet);
+                    }
+                }
+
+                // Get initial values from first existing record or defaults
+                var firstExisting = existingTimesheets?.FirstOrDefault();
+                string currProgram = firstExisting?.ProgramCode ?? "";
+                string currActivity = firstExisting?.ActivityCode ?? "";
+                string currStage = firstExisting?.StageCode ?? "";
+
+                var duration = (meeting.EndUtc - meeting.StartUtc).TotalHours;
+                var source = firstExisting != null ? "ManageTimesheet_Update" : "ManageTimesheet_Submit";
+
+                using (var dlg = new ProgramPickerForm(currProgram, currActivity, currStage, duration))
+                {
+                    if (dlg.ShowDialog() != DialogResult.OK)
+                        return;
+
+                    try
+                    {
+                        ns = Globals.ThisAddIn.Application.Session;
+                        appt = ns.GetItemFromID(meeting.EntryId) as Outlook.AppointmentItem;
+
+                        // Collect recipients
+                        string recipients = "";
+                        if (appt != null)
+                        {
+                            try { recipients = GetAllRecipients(appt); }
+                            catch (Exception recipEx)
+                            {
+                                System.Diagnostics.Debug.WriteLine($"Failed to get recipients: {recipEx.Message}");
+                            }
+                        }
+
+                        if (dlg.IsMultiProgram && dlg.ProgramAllocations.Count >= 1)
+                        {
+                            // ✅ Multi-program mode
+                            var allocations = new List<ProgramAllocation>();
+                            double additionalHours = dlg.ProgramAllocations.Sum(p => p.Hours);
+                            double originalProgramHours = duration - additionalHours;
+
+                            // Original program first
+                            allocations.Add(new ProgramAllocation
+                            {
+                                ProgramCode = dlg.ProgramCode,
+                                ActivityCode = dlg.ActivityCode,
+                                StageCode = dlg.StageCode,
+                                Hours = originalProgramHours
+                            });
+                            allocations.AddRange(dlg.ProgramAllocations);
+
+                            foreach (var allocation in allocations)
+                            {
+                                var rec = new MeetingRecord
+                                {
+                                    Source = source,
+                                    EntryId = meeting.EntryId,
+                                    GlobalId = meeting.GlobalId,
+                                    Subject = meeting.Subject,
+                                    StartUtc = meeting.StartUtc,
+                                    EndUtc = meeting.EndUtc,
+                                    HoursAllocated = allocation.Hours,
+                                    ProgramCode = allocation.ProgramCode,
+                                    ActivityCode = allocation.ActivityCode,
+                                    StageCode = allocation.StageCode,
+                                    UserDisplayName = email,
+                                    LastModifiedUtc = DateTime.UtcNow,
+                                    IsRecurring = meeting.IsRecurring,
+                                    Recipients = recipients,
+                                    Status = "submitted"
+                                };
+                                await DbWriter.UpsertAsync(rec);
+                            }
+
+                            if (appt != null)
+                                ApplyCategoryToAppointment(appt, "Timesheet Submitted", Outlook.OlCategoryColor.olCategoryColorPeach);
+
+                            MessageBox.Show(
+                                $"Timesheet submitted for {allocations.Count} programs!\n\n" +
+                                $"Original Program:\n  • {allocations[0].ProgramCode}: {allocations[0].Hours:F2} hrs\n\n" +
+                                $"Additional Programs:\n" +
+                                string.Join("\n", allocations.Skip(1).Select(a => $"  • {a.ProgramCode}: {a.Hours:F2} hrs")),
+                                "Multi-Program Timesheet Submitted",
+                                MessageBoxButtons.OK,
+                                MessageBoxIcon.Information);
+                        }
+                        else
+                        {
+                            // ✅ Single-program mode
+                            string programCode, activityCode, stageCode;
+
+                            if (dlg.IsMultiProgram && dlg.ProgramAllocations.Count == 1)
+                            {
+                                var singleAllocation = dlg.ProgramAllocations[0];
+                                programCode = singleAllocation.ProgramCode ?? "";
+                                activityCode = singleAllocation.ActivityCode ?? "";
+                                stageCode = singleAllocation.StageCode ?? "";
+                            }
+                            else
+                            {
+                                programCode = dlg.ProgramCode ?? "";
+                                activityCode = dlg.ActivityCode ?? "";
+                                stageCode = dlg.StageCode ?? "";
+                            }
+
+                            if (appt != null)
+                            {
+                                ups = appt.UserProperties;
+                                AddOrSetTextProp(ups, "ProgramCode", programCode);
+                                AddOrSetTextProp(ups, "ActivityCode", activityCode);
+                                AddOrSetTextProp(ups, "StageCode", stageCode);
+                            }
+
+                            var rec = new MeetingRecord
+                            {
+                                Source = source,
+                                EntryId = meeting.EntryId,
+                                GlobalId = meeting.GlobalId,
+                                Subject = meeting.Subject,
+                                StartUtc = meeting.StartUtc,
+                                EndUtc = meeting.EndUtc,
+                                ProgramCode = programCode,
+                                ActivityCode = activityCode,
+                                StageCode = stageCode,
+                                UserDisplayName = email,
+                                LastModifiedUtc = DateTime.UtcNow,
+                                IsRecurring = meeting.IsRecurring,
+                                Recipients = recipients,
+                                Status = "submitted"
+                            };
+
+                            await DbWriter.UpsertAsync(rec);
+
+                            if (appt != null)
+                                ApplyCategoryToAppointment(appt, "Timesheet Submitted", Outlook.OlCategoryColor.olCategoryColorPeach);
+
+                            var actionText = firstExisting != null ? "updated" : "submitted";
+                            MessageBox.Show(
+                                $"Timesheet {actionText} successfully!\n\n" +
+                                $"Program:  {programCode}\n" +
+                                $"Activity: {activityCode}\n" +
+                                $"Stage:    {stageCode}",
+                                $"Timesheet {(firstExisting != null ? "Updated" : "Submitted")}");
+                        }
+
+                        // Refresh the list
+                        _cachedUnsubmittedMeetings = null;
+                        _cacheExpiry = DateTime.MinValue;
+                        await LoadUnsubmittedMeetingsAsync();
+                    }
+                    finally
+                    {
+                        if (ups != null) { Marshal.ReleaseComObject(ups); ups = null; }
+                        if (appt != null) { Marshal.ReleaseComObject(appt); appt = null; }
+                        if (ns != null) { Marshal.ReleaseComObject(ns); ns = null; }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"SubmitMeetingAsync failed: {ex.Message}");
+                MessageBox.Show($"Failed to submit timesheet: {ex.Message}", "Error");
+            }
+        }
+
+        private async void IgnoreMeeting(MeetingRecord meeting, Panel panel)
+        {
+            try
+            {
+                var result = MessageBox.Show(
+                    $"Permanently ignore this meeting?\n\n" +
+                    $"Subject: {meeting.Subject}\n" +
+                    $"Date: {meeting.StartTorontoTime:MMM dd, yyyy HH:mm}\n\n" +
+                    $"This will permanently hide it from the unsubmitted list.",
+                    "Ignore Meeting",
+                    MessageBoxButtons.YesNo,
+                    MessageBoxIcon.Question);
+
+                if (result == DialogResult.Yes)
+                {
+                    var email = GetCurrentUserEmail();
+                    meeting.UserDisplayName = email;
+
+                    var success = await DbWriter.IgnoreTimesheetAsync(meeting);
+
+                    System.Diagnostics.Debug.WriteLine($"IgnoreMeeting: DbWriter.IgnoreTimesheetAsync returned: {success}");
+
+                    if (success)
+                    {
+                        System.Diagnostics.Debug.WriteLine($"🔍 IgnoreMeeting: meeting.IsRecurringOccurrence = {meeting.IsRecurringOccurrence}");
+
+                        if (!meeting.IsRecurringOccurrence)
+                        {
+                            Microsoft.Office.Interop.Outlook.NameSpace ns = null;
+                            Microsoft.Office.Interop.Outlook.AppointmentItem appt = null;
+                            try
+                            {
+                                ns = Globals.ThisAddIn.Application.Session;
+                                appt = ns.GetItemFromID(meeting.EntryId) as Microsoft.Office.Interop.Outlook.AppointmentItem;
+                                if (appt != null)
+                                {
+                                    // Only apply category if not a recurring series
+                                    if (appt.RecurrenceState != Microsoft.Office.Interop.Outlook.OlRecurrenceState.olApptMaster &&
+                                        appt.RecurrenceState != Microsoft.Office.Interop.Outlook.OlRecurrenceState.olApptOccurrence)
+                                    {
+                                        ApplyCategoryToAppointment(appt, "Timesheet Ignored", Microsoft.Office.Interop.Outlook.OlCategoryColor.olCategoryColorDarkGray);
+                                        System.Diagnostics.Debug.WriteLine($"✅ Applied 'Timesheet Ignored' category to non-recurring meeting: {appt.Subject}");
+                                    }
+                                }
+                            }
+                            finally
+                            {
+                                if (appt != null)
+                                {
+                                    System.Runtime.InteropServices.Marshal.ReleaseComObject(appt);
+                                    appt = null;
+                                }
+                                if (ns != null)
+                                {
+                                    System.Runtime.InteropServices.Marshal.ReleaseComObject(ns);
+                                    ns = null;
+                                }
+                            }
+                        }
+
+                        System.Diagnostics.Debug.WriteLine($"Permanently ignored meeting: {meeting.Subject}");
+
+                        // Clear cache and reload the unsubmitted meetings list
+                        _cachedUnsubmittedMeetings = null;
+                        _cacheExpiry = DateTime.MinValue;
+                        await LoadUnsubmittedMeetingsAsync();
+                    }
+                    else
+                    {
+                        MessageBox.Show("Failed to ignore meeting. Please try again.", "Error");
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"IgnoreMeeting failed: {ex.Message}");
+                System.Diagnostics.Debug.WriteLine($"Stack trace: {ex.StackTrace}");
+                MessageBox.Show($"Failed to ignore meeting: {ex.Message}", "Error");
+            }
+        }
+
+        // ✅ Helper to apply category to appointment with custom color
+        private void ApplyCategoryToAppointment(Microsoft.Office.Interop.Outlook.AppointmentItem appt, string categoryName, Microsoft.Office.Interop.Outlook.OlCategoryColor categoryColor)
+        {
+            Microsoft.Office.Interop.Outlook.NameSpace session = null;
+            Microsoft.Office.Interop.Outlook.Categories categories = null;
+            Microsoft.Office.Interop.Outlook.Category existingCategory = null;
+
+            try
+            {
+                if (appt.RecurrenceState == Microsoft.Office.Interop.Outlook.OlRecurrenceState.olApptOccurrence)
+                {
+                    System.Diagnostics.Debug.WriteLine($"⚠️ SKIPPING category for recurring meeting occurrence: {appt.Subject}");
+                    return;
+                }
+
+                session = Globals.ThisAddIn.Application.Session;
+                categories = session.Categories;
+                existingCategory = System.Linq.Enumerable.FirstOrDefault(
+                    System.Linq.Enumerable.Cast<Microsoft.Office.Interop.Outlook.Category>(categories),
+                    c => c.Name == categoryName);
+
+                if (existingCategory == null)
+                {
+                    categories.Add(categoryName, categoryColor);
+                }
+                else if (existingCategory.Color != categoryColor)
+                {
+                    categories.Remove(categoryName);
+                    categories.Add(categoryName, categoryColor);
+                }
+
+                // Remove any existing timesheet categories first (submitted or ignored)
+                if (!string.IsNullOrEmpty(appt.Categories))
+                {
+                    var existingCategories = appt.Categories.Split(new[] { ',', ';' }, StringSplitOptions.RemoveEmptyEntries)
+                        .Select(c => c.Trim())
+                        .Where(c => !c.Equals("Timesheet Submitted", StringComparison.OrdinalIgnoreCase) &&
+                                   !c.Equals("Timesheet Ignored", StringComparison.OrdinalIgnoreCase))
+                        .ToList();
+
+                    existingCategories.Add(categoryName);
+                    appt.Categories = string.Join(", ", existingCategories);
+                }
+                else
+                {
+                    appt.Categories = categoryName;
+                }
+
+                appt.Save();
+                System.Diagnostics.Debug.WriteLine($"ApplyCategoryToAppointment: Set categories to '{appt.Categories}'");
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"ApplyCategoryToAppointment failed: {ex.Message}");
+            }
+            finally
+            {
+                if (existingCategory != null)
+                {
+                    System.Runtime.InteropServices.Marshal.ReleaseComObject(existingCategory);
+                    existingCategory = null;
+                }
+                if (categories != null)
+                {
+                    System.Runtime.InteropServices.Marshal.ReleaseComObject(categories);
+                    categories = null;
+                }
+                if (session != null)
+                {
+                    System.Runtime.InteropServices.Marshal.ReleaseComObject(session);
+                    session = null;
+                }
+            }
+        }
+
+        // ✅ Helper method to add or set user property
+        private static void AddOrSetTextProp(Microsoft.Office.Interop.Outlook.UserProperties ups, string name, string value)
+        {
+            Microsoft.Office.Interop.Outlook.UserProperty up = null;
+            try
+            {
+                up = ups.Find(name);
+                if (up == null)
+                {
+                    up = ups.Add(name, Microsoft.Office.Interop.Outlook.OlUserPropertyType.olText, false, Type.Missing);
+                }
+                up.Value = value ?? string.Empty;
+            }
+            finally
+            {
+                if (up != null)
+                {
+                    System.Runtime.InteropServices.Marshal.ReleaseComObject(up);
+                    up = null;
+                }
+            }
+        }
+        private DateTime GetMondayOfCurrentWeek(DateTime date)
+        {
+            int diff = (7 + (date.DayOfWeek - DayOfWeek.Monday)) % 7;
+            return date.AddDays(-1 * diff).Date;
+        }
+        private async Task LoadWeeklyDataAsync()
+        {
+            try
+            {
+                var weekEnd = _currentWeekStart.AddDays(6);
+
+                // ✅ FIX: Marshal to UI thread BEFORE accessing UI controls
+                this.Invoke((MethodInvoker)delegate
+                {
+                    lblWeekRange.Text = $"{_currentWeekStart:MMM dd} - {weekEnd:MMM dd, yyyy}";
+                });
+
+                var email = GetCurrentUserEmail();
+                if (string.IsNullOrWhiteSpace(email))
+                {
+                    // ✅ FIX: Use Invoke for error message too
+                    this.Invoke((MethodInvoker)delegate
+                    {
+                        MessageBox.Show("Unable to determine current user email.", "Error");
+                    });
+                    return;
+                }
+
+                var connString = ConfigurationManager.ConnectionStrings["OemsDatabase"]?.ConnectionString;
+                if (string.IsNullOrWhiteSpace(connString))
+                {
+                    // ✅ FIX: Use Invoke for error message too
+                    this.Invoke((MethodInvoker)delegate
+                    {
+                        MessageBox.Show("Database connection not configured.", "Error");
+                    });
+                    return;
+                }
+
+                Array.Clear(_dailyHours, 0, _dailyHours.Length);
+                _lastWeekTotal = 0;
+
+                var lastWeekStart = _currentWeekStart.AddDays(-7);
+
+                using (var cn = new SqlConnection(connString))
+                {
+                    await cn.OpenAsync();
+
+                    // Current week
+                    using (var cmd = new SqlCommand("dbo.Timesheet_GetWeeklyData", cn))
+                    {
+                        cmd.CommandType = CommandType.StoredProcedure;
+                        cmd.Parameters.AddWithValue("@email", email);
+                        cmd.Parameters.AddWithValue("@weekStart", _currentWeekStart);
+                        cmd.Parameters.AddWithValue("@weekEnd", _currentWeekStart.AddDays(6));
+
+                        using (var reader = await cmd.ExecuteReaderAsync())
+                        {
+                            while (await reader.ReadAsync())
+                            {
+                                var workDate = reader.GetDateTime(0);
+                                double hours = 0;
+                                if (!reader.IsDBNull(1))
+                                {
+                                    hours = Convert.ToDouble(reader[1]);
+                                }
+                                int dayIndex = (int)((workDate - _currentWeekStart).TotalDays);
+                                if (dayIndex >= 0 && dayIndex < 7)
+                                    _dailyHours[dayIndex] = hours;
+                            }
+                        }
+                    }
+
+                    // Last week — reuse the same open connection (no second SqlConnection needed)
+                    using (var cmd = new SqlCommand("dbo.Timesheet_GetWeeklyData", cn))
+                    {
+                        cmd.CommandType = CommandType.StoredProcedure;
+                        cmd.Parameters.AddWithValue("@email", email);
+                        cmd.Parameters.AddWithValue("@weekStart", lastWeekStart);
+                        cmd.Parameters.AddWithValue("@weekEnd", lastWeekStart.AddDays(6));
+
+                        using (var reader = await cmd.ExecuteReaderAsync())
+                        {
+                            while (await reader.ReadAsync())
+                            {
+                                if (!reader.IsDBNull(1))
+                                {
+                                    _lastWeekTotal += Convert.ToDouble(reader[1]);
+                                }
+                            }
+                        }
+                    }
+                }
+
+                var totalHours = _dailyHours.Sum();
+                double targetHours = 32.5;
+                double targetPercentage = (totalHours / targetHours) * 100.0;
+                double weekDifference = totalHours - _lastWeekTotal;
+
+                string weekComparison = weekDifference >= 0
+                    ? $"▲ {Math.Abs(weekDifference):F1} hours more"
+                    : $"▼ {Math.Abs(weekDifference):F1} hours less";
+
+                Color comparisonColor = weekDifference >= 0
+                    ? Color.FromArgb(0, 150, 0)
+                    : Color.FromArgb(200, 0, 0);
+
+                // ✅ CRITICAL FIX: Marshal ALL UI updates to UI thread
+                this.Invoke((MethodInvoker)delegate
+                {
+                    lblTotalHours.Text = totalHours.ToString("F1");
+                    lblWeeklyTarget.Text = $"Target: {targetPercentage:F1}% of {targetHours} hours";
+                    lblWeeklyTarget.ForeColor = targetPercentage >= 100
+                        ? Color.FromArgb(0, 150, 0)
+                        : Color.FromArgb(100, 100, 100);
+
+                    lblLastWeekComparison.Text = $"Last week: {_lastWeekTotal:F1} hrs\n{weekComparison}";
+                    lblLastWeekComparison.ForeColor = comparisonColor;
+
+                    // ✅ IMPORTANT: Invalidate chart to trigger Paint on UI thread
+                    pnlChart.Invalidate();
+                });
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"LoadWeeklyDataAsync failed: {ex.Message}");
+                System.Diagnostics.Debug.WriteLine($"Stack trace: {ex.StackTrace}");
+
+                // ✅ FIX: Show error on UI thread
+                this.Invoke((MethodInvoker)delegate
+                {
+                    MessageBox.Show($"Failed to load timesheet data: {ex.Message}", "Error");
+                });
+            }
+        }
+
+        private void ShowLoadingMessage(string message)
+        {
+            this.Invoke((MethodInvoker)delegate
+            {
+                flowUnsubmitted.Controls.Clear();
+                flowUnsubmitted.Controls.Add(new Label
+                {
+                    Text = message,
+                    Font = new Font("Segoe UI", 10),
+                    Width = flowUnsubmitted.Width - 20,
+                    Height = 30,
+                    ForeColor = Color.Gray
+                });
+            });
+        }
+
+        private void ShowErrorMessage(string message)
+        {
+            this.Invoke((MethodInvoker)delegate
+            {
+                flowUnsubmitted.Controls.Clear();
+                flowUnsubmitted.Controls.Add(new Label
+                {
+                    Text = message,
+                    Font = new Font("Segoe UI", 10),
+                    Width = flowUnsubmitted.Width - 20,
+                    Height = 60,
+                    ForeColor = Color.Red
+                });
+            });
+        }
+
+        private void PnlChart_Paint(object sender, PaintEventArgs e)
+        {
+            var g = e.Graphics;
+            g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+            g.Clear(Color.White);
+
+            const int leftMargin = 30;
+            const int chartWidth = 185;
+            const int chartHeight = 130;
+            const int chartX = leftMargin;
+            const int chartY = 15;
+            const int barWidth = 20;
+            const int spacing = 5;
+            const double maxHours = 8.0;
+
+            using (var font = new Font("Segoe UI", 8))
+            using (var pen = new Pen(Color.LightGray, 1) { DashStyle = System.Drawing.Drawing2D.DashStyle.Dot })
+            {
+                for (int h = 0; h <= 8; h += 2)
+                {
+                    int y = chartY + chartHeight - (int)((h / maxHours) * chartHeight);
+                    g.DrawString(h.ToString(), font, Brushes.Gray, new PointF(8, y - 7));
+
+                    if (h > 0)
+                        g.DrawLine(pen, chartX, y, chartX + chartWidth, y);
+                }
+            }
+
+            for (int i = 0; i < 7; i++)
+            {
+                int x = chartX + (i * (barWidth + spacing));
+
+                using (var grayBrush = new SolidBrush(Color.FromArgb(220, 220, 220)))
+                {
+                    g.FillRectangle(grayBrush, x, chartY, barWidth, chartHeight);
+                }
+
+                double hours = _dailyHours[i];
+                if (hours > 0)
+                {
+                    int filledHeight = Math.Min((int)((hours / maxHours) * chartHeight), chartHeight);
+                    int filledY = chartY + chartHeight - filledHeight;
+
+                    using (var blueBrush = new SolidBrush(Color.FromArgb(0, 120, 212)))
+                    {
+                        g.FillRectangle(blueBrush, x, filledY, barWidth, filledHeight);
+                    }
+                }
+
+                using (var font = new Font("Segoe UI", 8, FontStyle.Bold))
+                {
+                    int xOffset = 2;
+                    var dayText = _dayLabels[i];
+                    var textSize = g.MeasureString(dayText, font);
+                    g.DrawString(dayText, font, Brushes.Black,
+                        new PointF(x + (barWidth - textSize.Width) / 2, chartY + chartHeight + 8));
+                }
+            }
+        }
+
+        private string GetCurrentUserEmail()
+        {
+            // Use cached value from ThisAddIn if available (avoids COM calls entirely)
+            var cached = Globals.ThisAddIn?.GetCachedUserEmail();
+            if (!string.IsNullOrWhiteSpace(cached))
+                return cached;
+
+            // Fallback: full COM lookup (first call only)
+            Microsoft.Office.Interop.Outlook.NameSpace session = null;
+            Microsoft.Office.Interop.Outlook.Recipient currentUser = null;
+            Microsoft.Office.Interop.Outlook.AddressEntry addrEntry = null;
+            Microsoft.Office.Interop.Outlook.PropertyAccessor pa = null;
+
+            try
+            {
+                session = Globals.ThisAddIn?.Application?.Session;
+                currentUser = session?.CurrentUser;
+                addrEntry = currentUser?.AddressEntry;
+
+                if (addrEntry != null)
+                {
+                    if ("EX".Equals(addrEntry.Type, StringComparison.OrdinalIgnoreCase))
+                    {
+                        const string PR_SMTP_ADDRESS = "http://schemas.microsoft.com/mapi/proptag/0x39FE001E";
+                        pa = addrEntry.PropertyAccessor;
+                        var smtp = pa.GetProperty(PR_SMTP_ADDRESS) as string;
+                        if (!string.IsNullOrWhiteSpace(smtp)) return smtp;
+                    }
+                    if (!string.IsNullOrWhiteSpace(addrEntry.Address)) return addrEntry.Address;
+                }
+                return currentUser?.Name ?? string.Empty;
+            }
+            catch { return string.Empty; }
+            finally
+            {
+                if (pa != null) { System.Runtime.InteropServices.Marshal.ReleaseComObject(pa); pa = null; }
+                if (addrEntry != null) { System.Runtime.InteropServices.Marshal.ReleaseComObject(addrEntry); addrEntry = null; }
+                if (currentUser != null) { System.Runtime.InteropServices.Marshal.ReleaseComObject(currentUser); currentUser = null; }
+                if (session != null) { System.Runtime.InteropServices.Marshal.ReleaseComObject(session); session = null; }
+            }
+        }
+
+        private async Task<List<MeetingRecord>> GetUnsubmittedMeetingsFromOutlookAsync(string email)
+        {
+            var unsubmittedMeetings = new List<MeetingRecord>();
+            var connString = ConfigurationManager.ConnectionStrings["OemsDatabase"]?.ConnectionString;
+            if (string.IsNullOrWhiteSpace(connString))
+                throw new InvalidOperationException("Database connection not configured.");
+
+            var torontoTz = TimeZoneInfo.FindSystemTimeZoneById("Eastern Standard Time");
+            var nowTorontoTime = TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, torontoTz);
+            var startDateTorontoTime = nowTorontoTime.AddDays(-7);
+
+            var submittedOrIgnoredKeys = new HashSet<string>();
+            using (var cn = new SqlConnection(connString))
+            {
+                await cn.OpenAsync();
+                using (var cmd = new SqlCommand("dbo.Timesheet_GetSubmittedOrIgnoredKeys", cn))
+                {
+                    cmd.CommandType = CommandType.StoredProcedure;
+                    cmd.Parameters.Add(new SqlParameter("@email", SqlDbType.NVarChar, 320) { Value = email });
+                    cmd.Parameters.Add(new SqlParameter("@startDate", SqlDbType.DateTime2) { Value = startDateTorontoTime });
+
+                    using (var reader = await cmd.ExecuteReaderAsync())
+                    {
+                        while (await reader.ReadAsync())
+                        {
+                            var globalId = reader.GetString(0);
+                            var startUtc = reader.GetDateTime(1);
+                            var key = $"{globalId}|{startUtc:yyyy-MM-dd}";
+                            submittedOrIgnoredKeys.Add(key);
+                        }
+                    }
+                }
+            }
+
+            System.Diagnostics.Debug.WriteLine($"Found {submittedOrIgnoredKeys.Count} already submitted/ignored events in database");
+
+            await Task.Run(() =>
+            {
+                Microsoft.Office.Interop.Outlook.Application app = null;
+                Microsoft.Office.Interop.Outlook.NameSpace ns = null;
+                Microsoft.Office.Interop.Outlook.MAPIFolder calFolder = null;
+                Microsoft.Office.Interop.Outlook.Items items = null;
+                Microsoft.Office.Interop.Outlook.Items filteredItems = null;
+
+                try
+                {
+                    app = Globals.ThisAddIn.Application;
+                    ns = app.Session;
+                    calFolder = ns.GetDefaultFolder(Microsoft.Office.Interop.Outlook.OlDefaultFolders.olFolderCalendar);
+                    items = calFolder.Items;
+                    items.Sort("[Start]", false);
+                    items.IncludeRecurrences = true;
+
+                    var startDate = DateTime.Now.AddDays(-7);
+                    var endDate = DateTime.Now.AddDays(1);
+                    var filter = $"[Start] >= '{startDate:g}' AND [Start] <= '{endDate:g}'";
+                    filteredItems = items.Restrict(filter);
+
+                    int maxItems = Math.Min(filteredItems.Count, 200);
+
+                    for (int i = 1; i <= maxItems; i++)
+                    {
+                        Microsoft.Office.Interop.Outlook.AppointmentItem appt = null;
+                        try
+                        {
+                            appt = filteredItems[i] as Microsoft.Office.Interop.Outlook.AppointmentItem;
+                            if (appt == null) continue;
+
+                            var globalId = appt.GlobalAppointmentID ?? string.Empty;
+                            var apptStartUtc = appt.StartUTC;
+                            var recurrenceState = appt.RecurrenceState;
+
+                            if (recurrenceState == Microsoft.Office.Interop.Outlook.OlRecurrenceState.olApptMaster)
+                            {
+                                System.Diagnostics.Debug.WriteLine($"⏭️ SKIPPING master appointment: {appt.Subject ?? "(no subject)"}");
+                                continue;
+                            }
+
+                            var apptStartTorontoTime = TimeZoneInfo.ConvertTimeFromUtc(apptStartUtc, torontoTz);
+                            var compositeKey = $"{globalId}|{apptStartTorontoTime:yyyy-MM-dd}";
+
+                            if (string.IsNullOrWhiteSpace(globalId) || submittedOrIgnoredKeys.Contains(compositeKey))
+                            {
+                                continue;
+                            }
+
+                            if (appt.MeetingStatus == Microsoft.Office.Interop.Outlook.OlMeetingStatus.olMeetingCanceled ||
+                                appt.MeetingStatus == Microsoft.Office.Interop.Outlook.OlMeetingStatus.olMeetingReceivedAndCanceled)
+                                continue;
+
+                            System.Diagnostics.Debug.WriteLine($"📅 Found unsubmitted: {appt.Subject ?? "(no subject)"}");
+
+                            unsubmittedMeetings.Add(new MeetingRecord
+                            {
+                                EntryId = appt.EntryID ?? "",
+                                GlobalId = globalId,
+                                Subject = appt.Subject ?? "",
+                                StartUtc = apptStartUtc,
+                                EndUtc = appt.EndUTC,
+                                UserDisplayName = email,
+                                IsRecurringOccurrence = recurrenceState == Microsoft.Office.Interop.Outlook.OlRecurrenceState.olApptOccurrence
+                            });
+                        }
+                        finally
+                        {
+                            if (appt != null)
+                            {
+                                System.Runtime.InteropServices.Marshal.ReleaseComObject(appt);
+                                appt = null;
+                            }
+                        }
+                    }
+                }
+                finally
+                {
+                    if (filteredItems != null)
+                    {
+                        System.Runtime.InteropServices.Marshal.ReleaseComObject(filteredItems);
+                        filteredItems = null;
+                    }
+                    if (items != null)
+                    {
+                        System.Runtime.InteropServices.Marshal.ReleaseComObject(items);
+                        items = null;
+                    }
+                    if (calFolder != null)
+                    {
+                        System.Runtime.InteropServices.Marshal.ReleaseComObject(calFolder);
+                        calFolder = null;
+                    }
+                    if (ns != null)
+                    {
+                        System.Runtime.InteropServices.Marshal.ReleaseComObject(ns);
+                        ns = null;
+                    }
+                }
+            });
+
+            return unsubmittedMeetings;
+        }
+
+        // ✅ Load unsubmitted from Outlook (shows: Today, Yesterday, Last Week + Submit/Ignore buttons)
+        private async Task LoadUnsubmittedMeetingsAsync()
+        {
+            try
+            {
+                ShowLoadingMessage("Loading unsubmitted events...");
+
+                var email = GetCurrentUserEmail();
+                if (string.IsNullOrWhiteSpace(email))
+                {
+                    ShowErrorMessage("Unable to determine current user email.");
+                    return;
+                }
+
+                // ✅ Use cached data if fresh (< 2 minutes old)
+                List<MeetingRecord> unsubmittedMeetings;
+                if (_cachedUnsubmittedMeetings != null && DateTime.Now < _cacheExpiry)
+                {
+                    System.Diagnostics.Debug.WriteLine("Using cached unsubmitted meetings");
+                    unsubmittedMeetings = _cachedUnsubmittedMeetings;
+                }
+                else
+                {
+                    unsubmittedMeetings = await GetUnsubmittedMeetingsFromOutlookAsync(email);
+                    _cachedUnsubmittedMeetings = unsubmittedMeetings;
+                    _cacheExpiry = DateTime.Now.AddMinutes(2);
+                }
+
+                // Group by date categories (do this on background thread)
+                var today = DateTime.Today;
+                var yesterday = today.AddDays(-1);
+                var lastWeekStart = today.AddDays(-7);
+
+                var todayMeetings = unsubmittedMeetings.Where(m => m.StartTorontoTime.Date == today).OrderBy(m => m.StartTorontoTime).ToList();
+                var yesterdayMeetings = unsubmittedMeetings.Where(m => m.StartTorontoTime.Date == yesterday).OrderBy(m => m.StartTorontoTime).ToList();
+                var lastWeekMeetings = unsubmittedMeetings.Where(m => m.StartTorontoTime.Date >= lastWeekStart && m.StartTorontoTime.Date < yesterday).OrderBy(m => m.StartTorontoTime).ToList();
+
+                // ✅ CRITICAL FIX: ALL UI updates must be on UI thread
+                this.Invoke((MethodInvoker)delegate
+                {
+                    try
+                    {
+                        flowUnsubmitted.Controls.Clear();
+
+                        if (unsubmittedMeetings.Count == 0)
+                        {
+                            flowUnsubmitted.Controls.Add(new Label
+                            {
+                                Text = "No unsubmitted events found.",
+                                Font = new Font("Segoe UI", 10),
+                                Size = new Size(flowUnsubmitted.Width - 25, 40),
+                                ForeColor = Color.Green,
+                                Padding = new Padding(0, 10, 0, 0)
+                            });
+                            return;
+                        }
+
+                        if (todayMeetings.Count > 0) AddMeetingSection("Today", todayMeetings);
+                        if (yesterdayMeetings.Count > 0) AddMeetingSection("Yesterday", yesterdayMeetings);
+                        if (lastWeekMeetings.Count > 0) AddMeetingSection("Last Week", lastWeekMeetings);
+
+                        // Bottom padding spacer to ensure last section is fully visible when scrolling
+                        flowUnsubmitted.Controls.Add(new Label
+                        {
+                            Size = new Size(flowUnsubmitted.Width - 25, 100),
+                            Text = ""
+                        });
+                    }
+                    catch (Exception invokeEx)
+                    {
+                        System.Diagnostics.Debug.WriteLine($"Error during Invoke: {invokeEx.Message}");
+                        System.Diagnostics.Debug.WriteLine($"Stack trace: {invokeEx.StackTrace}");
+                        throw;
+                    }
+                });
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"LoadUnsubmittedMeetingsAsync failed: {ex.Message}");
+                System.Diagnostics.Debug.WriteLine($"Stack trace: {ex.StackTrace}");
+                ShowErrorMessage($"Error loading events: {ex.Message}");
+            }
+        }
+
+        // ✅ CONSOLIDATED: Single method for both submitted and unsubmitted sections
+        private void AddMeetingSection(string title, List<MeetingRecord> meetings, bool isSubmitted = false)
+        {
+            var flowPanel = isSubmitted ? flowSubmitted : flowUnsubmitted;
+            int w = flowPanel.Width - 25;
+            
+            // Colors and styles
+            var headerColor = isSubmitted ? Color.FromArgb(0, 150, 0) : Color.FromArgb(0, 120, 212);
+            var panelColor = isSubmitted ? Color.FromArgb(245, 255, 245) : Color.FromArgb(250, 250, 250);
+            var panelHeight = isSubmitted ? 110 : 85;
+            
+            flowPanel.Controls.Add(new Label
+            {
+                Text = $"{title} ({meetings.Count})",
+                Font = new Font("Segoe UI", 11, FontStyle.Bold),
+                Size = new Size(w, 30),
+                ForeColor = headerColor,
+                TextAlign = ContentAlignment.MiddleLeft
+            });
+
+            foreach (var m in meetings)
+            {
+                var p = new Panel
+                {
+                    Size = new Size(w, panelHeight),
+                    BorderStyle = BorderStyle.FixedSingle,
+                    BackColor = panelColor,
+                    Margin = new Padding(0, 0, 0, 6)
+                };
+
+                p.Controls.Add(new Label
+                {
+                    Text = m.Subject,
+                    Font = new Font("Segoe UI", 9, FontStyle.Bold),
+                    Location = new Point(5, 5),
+                    Size = new Size(w - 15, 24),
+                    AutoEllipsis = true
+                });
+
+                p.Controls.Add(new Label
+                {
+                    Text = $"{m.StartTorontoTime:MMM dd, HH:mm} ({(m.EndUtc - m.StartUtc).TotalHours:F1} hrs)",
+                    Font = new Font("Segoe UI", 8),
+                    Location = new Point(5, 30),
+                    Size = new Size(w - 15, 20),
+                    ForeColor = Color.FromArgb(100, 100, 100)
+                });
+
+                // Show program info on submitted items, not on unsubmitted
+                if (isSubmitted)
+                {
+                    p.Controls.Add(new Label
+                    {
+                        Text = $"Program: {m.ProgramCode} | Activity: {m.ActivityCode}",
+                        Font = new Font("Segoe UI", 8),
+                        Location = new Point(5, 51),
+                        Size = new Size(w - 15, 18),
+                        ForeColor = Color.FromArgb(100, 100, 100),
+                        AutoEllipsis = true
+                    });
+                }
+
+                int bw = (w - 20) / 2;
+                
+                if (isSubmitted)
+                {
+                    // Submitted tab: Cancel Submit & Un-Ignore buttons
+                    var btnCancel = new Button
+                    {
+                        Text = "Cancel Submit",
+                        Location = new Point(5, 72),
+                        Size = new Size(bw, 27),
+                        BackColor = Color.FromArgb(220, 100, 100),
+                        ForeColor = Color.White,
+                        FlatStyle = FlatStyle.Flat,
+                        Font = new Font("Segoe UI", 8, FontStyle.Bold)
+                    };
+                    btnCancel.FlatAppearance.BorderSize = 0;
+                    // ✅ FIX: Capture the list properly for async handler
+                    var recordsToCancel = meetings;
+                    btnCancel.Click += async (s, e) => await CancelSubmissionAsync(recordsToCancel);
+
+                    var btnUnignore = new Button
+                    {
+                        Text = "Un-Ignore",
+                        Location = new Point(10 + bw, 72),
+                        Size = new Size(bw, 27),
+                        BackColor = Color.FromArgb(200, 200, 200),
+                        ForeColor = Color.FromArgb(60, 60, 60),
+                        FlatStyle = FlatStyle.Flat,
+                        Font = new Font("Segoe UI", 8)
+                    };
+                    btnUnignore.FlatAppearance.BorderSize = 0;
+                    btnUnignore.Click += async (s, e) => await CancelIgnoreSubmissionAsync(m);
+
+                    p.Controls.AddRange(new Control[] { btnCancel, btnUnignore });
+                }
+                else
+                {
+                    // Unsubmitted tab: Submit & Ignore buttons
+                    var btnSubmit = new Button
+                    {
+                        Text = "Submit",
+                        Location = new Point(5, 53),
+                        Size = new Size(bw, 27),
+                        BackColor = Color.FromArgb(0, 120, 212),
+                        ForeColor = Color.White,
+                        FlatStyle = FlatStyle.Flat,
+                        Font = new Font("Segoe UI", 8, FontStyle.Bold)
+                    };
+                    btnSubmit.FlatAppearance.BorderSize = 0;
+                    btnSubmit.Click += async (s, e) => await SubmitMeetingAsync(m);
+
+                    var btnIgnore = new Button
+                    {
+                        Text = "Ignore",
+                        Location = new Point(10 + bw, 53),
+                        Size = new Size(bw, 27),
+                        BackColor = Color.FromArgb(220, 220, 220),
+                        ForeColor = Color.FromArgb(60, 60, 60),
+                        FlatStyle = FlatStyle.Flat,
+                        Font = new Font("Segoe UI", 8)
+                    };
+                    btnIgnore.FlatAppearance.BorderSize = 0;
+                    btnIgnore.Click += (s, e) => IgnoreMeeting(m, p);
+
+                    p.Controls.AddRange(new Control[] { btnSubmit, btnIgnore });
+                }
+                
+                flowPanel.Controls.Add(p);
+            }
+
+            flowPanel.Controls.Add(new Label { Size = new Size(w, 10) });
+        }
+
+        // ✅ Helper to collect all recipients from a meeting
+        private static string GetAllRecipients(Outlook.AppointmentItem appt)
+        {
+            if (appt == null) return string.Empty;
+            if (appt.MeetingStatus == Outlook.OlMeetingStatus.olNonMeeting)
+                return string.Empty;
+
+            var recipientEmails = new List<string>();
+            Outlook.Recipients recipients = null;
+            try
+            {
+                recipients = appt.Recipients;
+                if (recipients != null && recipients.Count > 0)
+                {
+                    foreach (Outlook.Recipient recipient in recipients)
+                    {
+                        Outlook.Recipient r = recipient;
+                        try
+                        {
+                            var email = GetRecipientEmail(r);
+                            if (!string.IsNullOrWhiteSpace(email))
+                                recipientEmails.Add(email);
+                        }
+                        catch { }
+                        finally
+                        {
+                            if (r != null) Marshal.ReleaseComObject(r);
+                        }
+                    }
+                }
+                var organizerEmail = GetRecipientEmailFromAppointment(appt);
+                if (!string.IsNullOrWhiteSpace(organizerEmail) && !recipientEmails.Contains(organizerEmail))
+                    recipientEmails.Insert(0, organizerEmail);
+            }
+            catch { }
+            finally
+            {
+                if (recipients != null) { Marshal.ReleaseComObject(recipients); }
+            }
+            return string.Join("; ", recipientEmails);
+        }
+
+        private static string GetRecipientEmail(Outlook.Recipient recipient)
+        {
+            if (recipient == null) return string.Empty;
+            Outlook.AddressEntry addrEntry = null;
+            try
+            {
+                addrEntry = recipient.AddressEntry;
+                if (addrEntry != null)
+                {
+                    if ("EX".Equals(addrEntry.Type, StringComparison.OrdinalIgnoreCase))
+                    {
+                        const string PR_SMTP_ADDRESS = "http://schemas.microsoft.com/mapi/proptag/0x39FE001E";
+                        var smtp = addrEntry.PropertyAccessor.GetProperty(PR_SMTP_ADDRESS) as string;
+                        if (!string.IsNullOrWhiteSpace(smtp)) return smtp;
+                    }
+                    if (!string.IsNullOrWhiteSpace(addrEntry.Address))
+                        return addrEntry.Address;
+                }
+                return recipient.Address ?? string.Empty;
+            }
+            catch { return string.Empty; }
+            finally
+            {
+                if (addrEntry != null) { Marshal.ReleaseComObject(addrEntry); }
+            }
+        }
+
+        private static string GetRecipientEmailFromAppointment(Outlook.AppointmentItem appt)
+        {
+            if (appt == null) return string.Empty;
+            Outlook.AddressEntry organizerEntry = null;
+            Outlook.NameSpace session = null;
+            Outlook.AddressEntry addrEntry = null;
+            Outlook.Recipient currentUser = null;
+            Outlook.AddressEntry currentUserAddrEntry = null;
+
+            try
+            {
+                organizerEntry = appt.GetOrganizer();
+                if (organizerEntry != null)
+                {
+                    session = Globals.ThisAddIn?.Application?.Session;
+                    if (session != null)
+                    {
+                        addrEntry = session.GetAddressEntryFromID(organizerEntry.ID);
+                        if (addrEntry != null)
+                        {
+                            if ("EX".Equals(addrEntry.Type, StringComparison.OrdinalIgnoreCase))
+                            {
+                                const string PR_SMTP_ADDRESS = "http://schemas.microsoft.com/mapi/proptag/0x39FE001E";
+                                var smtp = addrEntry.PropertyAccessor.GetProperty(PR_SMTP_ADDRESS) as string;
+                                if (!string.IsNullOrWhiteSpace(smtp)) return smtp;
+                            }
+                            if (!string.IsNullOrWhiteSpace(addrEntry.Address))
+                                return addrEntry.Address;
+                        }
+                    }
+                }
+            }
+            catch { }
+            finally
+            {
+                if (addrEntry != null) { Marshal.ReleaseComObject(addrEntry); addrEntry = null; }
+                if (organizerEntry != null) { Marshal.ReleaseComObject(organizerEntry); }
+                if (session != null) { Marshal.ReleaseComObject(session); session = null; }
+            }
+
+            try
+            {
+                session = Globals.ThisAddIn?.Application?.Session;
+                currentUser = session?.CurrentUser;
+                if (currentUser != null)
+                {
+                    currentUserAddrEntry = currentUser.AddressEntry;
+                    if (currentUserAddrEntry != null)
+                    {
+                        if ("EX".Equals(currentUserAddrEntry.Type, StringComparison.OrdinalIgnoreCase))
+                        {
+                            const string PR_SMTP_ADDRESS = "http://schemas.microsoft.com/mapi/proptag/0x39FE001E";
+                            var smtp = currentUserAddrEntry.PropertyAccessor.GetProperty(PR_SMTP_ADDRESS) as string;
+                            if (!string.IsNullOrWhiteSpace(smtp)) return smtp;
+                        }
+                        if (!string.IsNullOrWhiteSpace(currentUserAddrEntry.Address))
+                            return currentUserAddrEntry.Address;
+                    }
+                }
+            }
+            catch { }
+            finally
+            {
+                if (currentUserAddrEntry != null) { Marshal.ReleaseComObject(currentUserAddrEntry); }
+                if (currentUser != null) { Marshal.ReleaseComObject(currentUser); }
+                if (session != null) { Marshal.ReleaseComObject(session); }
+            }
+            return string.Empty;
+        }
+
+        // === Full Program Picker Dialog with Multi-Program Support ===
+        private class ProgramPickerForm : Form
+        {
+            private ComboBox cboProgram;
+            private ComboBox cboActivity;
+            private ComboBox cboStage;
+            private CheckBox chkMultiplePrograms;
+            private Panel pnlMultiProgram;
+            private FlowLayoutPanel flowPrograms;
+            private Button btnAddProgram;
+            private Label lblTotalTime;
+            private Label lblAllocatedTime;
+            private Button btnOk, btnCancel;
+
+            private double _meetingDurationHours;
+            private List<ProgramAllocation> _programAllocations = new List<ProgramAllocation>();
+
+            private List<StageCodeData> _stageCodes = new List<StageCodeData>();
+            private List<ActivityCodeData> _activityCodes = new List<ActivityCodeData>();
+            private List<string> _programCodes = new List<string>();
+
+            public bool IsMultiProgram => chkMultiplePrograms?.Checked ?? false;
+            public List<ProgramAllocation> ProgramAllocations => _programAllocations;
+
+            public string ProgramCode => cboProgram.SelectedItem?.ToString() ?? string.Empty;
+            public string ActivityCode => GetActivityCode(cboActivity.SelectedItem);
+            public string StageCode => GetStageCode(cboStage.SelectedItem);
+
+            private string GetActivityCode(object selectedItem)
+            {
+                if (selectedItem is ActivityCodeData actData)
+                    return actData.ActivityCode;
+                return selectedItem?.ToString() ?? string.Empty;
+            }
+
+            private string GetStageCode(object selectedItem)
+            {
+                if (selectedItem is StageCodeData stageData)
+                    return stageData.StageCode;
+                return selectedItem?.ToString() ?? string.Empty;
+            }
+
+            private async Task LoadActivitiesFromSqlAsync(string initActivity)
+            {
+                try
+                {
+                    var cs = ConfigurationManager.ConnectionStrings["OemsDatabase"].ConnectionString;
+                    var list = new List<ActivityCodeData>();
+                    using (var cn = new SqlConnection(cs))
+                    using (var cmd = new SqlCommand("dbo.Timesheet_GetActivityCodes", cn))
+                    {
+                        cmd.CommandType = CommandType.StoredProcedure;
+                        await cn.OpenAsync();
+                        using (var rdr = await cmd.ExecuteReaderAsync())
+                        {
+                            while (await rdr.ReadAsync())
+                            {
+                                list.Add(new ActivityCodeData
+                                {
+                                    ActivityCode = rdr["ActivityCode"] as string ?? "",
+                                    ActivityDescription = rdr["ActivityDescription"] as string ?? "",
+                                    SortOrder = rdr["SortOrder"] != DBNull.Value ? Convert.ToInt32(rdr["SortOrder"]) : 0
+                                });
+                            }
+                        }
+                    }
+                    _activityCodes = list;
+                    cboActivity.BeginUpdate();
+                    try
+                    {
+                        cboActivity.Items.Clear();
+                        if (list.Count == 0)
+                            cboActivity.Items.AddRange(new object[] { "Air", "Accommodation", "Food and Beverage", "Side Excursions", "OTHER" });
+                        else
+                        {
+                            cboActivity.Items.AddRange(list.ToArray());
+                            if (!string.IsNullOrWhiteSpace(initActivity))
+                            {
+                                var match = list.FirstOrDefault(a => a.ActivityCode.Equals(initActivity, StringComparison.OrdinalIgnoreCase));
+                                if (match != null) cboActivity.SelectedItem = match;
+                            }
+                        }
+                        if (cboActivity.SelectedIndex < 0 && cboActivity.Items.Count > 0) cboActivity.SelectedIndex = 0;
+                        cboActivity.Enabled = true;
+                    }
+                    finally { cboActivity.EndUpdate(); }
+                }
+                catch (Exception ex)
+                {
+                    System.Diagnostics.Debug.WriteLine($"LoadActivitiesFromSqlAsync failed: {ex.Message}");
+                    cboActivity.BeginUpdate();
+                    try
+                    {
+                        cboActivity.Items.Clear();
+                        cboActivity.Items.AddRange(new object[] { "Air", "Accommodation", "Food and Beverage", "Side Excursions", "OTHER" });
+                        if (cboActivity.SelectedIndex < 0) cboActivity.SelectedIndex = 0;
+                        cboActivity.Enabled = true;
+                    }
+                    finally { cboActivity.EndUpdate(); }
+                }
+            }
+
+            private async Task LoadStagesFromSqlAsync(string initStage)
+            {
+                try
+                {
+                    var cs = ConfigurationManager.ConnectionStrings["OemsDatabase"].ConnectionString;
+                    var list = new List<StageCodeData>();
+                    using (var cn = new SqlConnection(cs))
+                    using (var cmd = new SqlCommand("dbo.Timesheet_GetStageCodes", cn))
+                    {
+                        cmd.CommandType = CommandType.StoredProcedure;
+                        var userEmail = GetCurrentUserEmail();
+                        cmd.Parameters.Add(new SqlParameter("@UserEmail", SqlDbType.NVarChar, 320) { Value = userEmail });
+                        await cn.OpenAsync();
+                        using (var rdr = await cmd.ExecuteReaderAsync())
+                        {
+                            while (await rdr.ReadAsync())
+                            {
+                                list.Add(new StageCodeData
+                                {
+                                    StageCode = rdr["StageCode"] as string ?? "",
+                                    StageDescription = rdr["StageDescription"] as string ?? "",
+                                    SortOrder = rdr["SortOrder"] != DBNull.Value ? Convert.ToInt32(rdr["SortOrder"]) : 0
+                                });
+                            }
+                        }
+                    }
+                    _stageCodes = list;
+                    cboStage.BeginUpdate();
+                    try
+                    {
+                        cboStage.Items.Clear();
+                        if (list.Count == 0)
+                            cboStage.Items.AddRange(new object[] { "Client Communication", "Internal Communication", "Vendor Communication", "Work Time" });
+                        else
+                        {
+                            cboStage.Items.AddRange(list.ToArray());
+                            if (!string.IsNullOrWhiteSpace(initStage))
+                            {
+                                var match = list.FirstOrDefault(s => s.StageCode.Equals(initStage, StringComparison.OrdinalIgnoreCase));
+                                if (match != null) cboStage.SelectedItem = match;
+                            }
+                        }
+                        if (cboStage.SelectedIndex < 0 && cboStage.Items.Count > 0) cboStage.SelectedIndex = 0;
+                        cboStage.Enabled = true;
+                    }
+                    finally { cboStage.EndUpdate(); }
+                }
+                catch (Exception ex)
+                {
+                    System.Diagnostics.Debug.WriteLine($"LoadStagesFromSqlAsync failed: {ex.Message}");
+                    cboStage.BeginUpdate();
+                    try
+                    {
+                        cboStage.Items.Clear();
+                        cboStage.Items.AddRange(new object[] { "Client Communication", "Internal Communication", "Vendor Communication", "Work Time" });
+                        if (cboStage.SelectedIndex < 0) cboStage.SelectedIndex = 0;
+                        cboStage.Enabled = true;
+                    }
+                    finally { cboStage.EndUpdate(); }
+                }
+            }
+
+            private async Task LoadProgramsFromSqlAsync(string email, string initProgram)
+            {
+                try
+                {
+                    if (string.IsNullOrWhiteSpace(email)) throw new ArgumentException("Email required");
+                    var cs = ConfigurationManager.ConnectionStrings["OemsDatabase"].ConnectionString;
+                    var list = new List<string>();
+                    using (var cn = new SqlConnection(cs))
+                    {
+                        await cn.OpenAsync();
+                        using (var cmd = new SqlCommand("dbo.TimeSheet_GetActivePrograms", cn))
+                        {
+                            cmd.CommandType = CommandType.StoredProcedure;
+                            cmd.CommandTimeout = 30;
+                            cmd.Parameters.Add(new SqlParameter("@UserEmail", SqlDbType.NVarChar, 320) { Value = email });
+                            using (var rdr = await cmd.ExecuteReaderAsync())
+                            {
+                                while (await rdr.ReadAsync())
+                                {
+                                    var code = rdr["ProgramCode"] as string;
+                                    if (!string.IsNullOrWhiteSpace(code))
+                                        list.Add(code.Trim());
+                                }
+                            }
+                        }
+                    }
+                    _programCodes = list;
+                    cboProgram.BeginUpdate();
+                    try
+                    {
+                        cboProgram.Items.Clear();
+                        cboProgram.Items.Add("Project-OEMS A12004");
+                        cboProgram.Items.Add("Project Monday A12005");
+                        cboProgram.Items.Add("Buying/Proposal A13000");
+                        cboProgram.Items.Add("People-Vacation A14001");
+                        cboProgram.Items.Add("People-Personal Time A14002");
+                        cboProgram.Items.Add("People-Sick A14003");
+                        cboProgram.Items.Add("People-Stat Holiday A14004");
+                        cboProgram.Items.Add("Finance-Invoicing/AR A15001");
+                        if (list.Count > 0) cboProgram.Items.Add("──────────────────────");
+                        if (list.Count == 0)
+                            cboProgram.Items.Add("(No active programs found)");
+                        else
+                            cboProgram.Items.AddRange(list.ToArray());
+                        SelectIfPresent(cboProgram, initProgram);
+                        if (cboProgram.SelectedIndex < 0) cboProgram.SelectedIndex = 0;
+                        cboProgram.Enabled = true;
+                    }
+                    finally { cboProgram.EndUpdate(); }
+                }
+                catch (Exception ex)
+                {
+                    System.Diagnostics.Debug.WriteLine($"LoadProgramsFromSqlAsync failed: {ex.Message}");
+                    cboProgram.BeginUpdate();
+                    try
+                    {
+                        cboProgram.Items.Clear();
+                        cboProgram.Items.Add("Project-OEMS A12004");
+                        cboProgram.Items.Add("Project Monday A12005");
+                        cboProgram.Items.Add("Buying/Proposal A13000");
+                        cboProgram.Items.Add("People-Vacation A14001");
+                        cboProgram.Items.Add("People-Personal Time A14002");
+                        cboProgram.Items.Add("People-Sick A14003");
+                        cboProgram.Items.Add("People-Stat Holiday A14004");
+                        cboProgram.Items.Add("Finance-Invoicing/AR A15001");
+                        cboProgram.Items.Add("──────────────────────");
+                        cboProgram.Items.AddRange(new object[] { "test-0001", "test-0002" });
+                        if (cboProgram.SelectedIndex < 0) cboProgram.SelectedIndex = 0;
+                        cboProgram.Enabled = true;
+                    }
+                    finally { cboProgram.EndUpdate(); }
+                    MessageBox.Show("Failed to load Program/Proposal codes: " + ex.Message);
+                }
+            }
+
+            public ProgramPickerForm() : this(null, null, null, 0) { }
+            public ProgramPickerForm(string initProgram, string initActivity, string initStage) : this(initProgram, initActivity, initStage, 0) { }
+
+            public ProgramPickerForm(string initProgram, string initActivity, string initStage, double meetingDurationHours)
+            {
+                _meetingDurationHours = meetingDurationHours;
+
+                Text = "Meeting Information";
+                FormBorderStyle = FormBorderStyle.FixedDialog;
+                StartPosition = FormStartPosition.CenterScreen;
+                MaximizeBox = false;
+                MinimizeBox = false;
+                Width = 520;
+                Height = 220;
+                TopMost = true;
+
+                var lblProgram = new Label { Left = 15, Top = 20, Width = 120, Text = "Program Code:" };
+                cboProgram = new ComboBox { Left = 140, Top = 16, Width = 340, DropDownStyle = ComboBoxStyle.DropDownList, TabIndex = 1 };
+
+                var lblActivity = new Label { Left = 15, Top = 55, Width = 120, Text = "Activity Code:" };
+                cboActivity = new ComboBox { Left = 140, Top = 51, Width = 340, DropDownStyle = ComboBoxStyle.DropDownList, TabIndex = 2 };
+
+                var lblStage = new Label { Left = 15, Top = 90, Width = 120, Text = "Stage Code:" };
+                cboStage = new ComboBox { Left = 140, Top = 86, Width = 340, DropDownStyle = ComboBoxStyle.DropDownList, TabIndex = 3 };
+
+                chkMultiplePrograms = new CheckBox
+                {
+                    Left = 15, Top = 125, Width = 290,
+                    Text = "Add Additional Programs",
+                    TabIndex = 4,
+                    Visible = meetingDurationHours > 0
+                };
+                chkMultiplePrograms.CheckedChanged += ChkMultiplePrograms_CheckedChanged;
+
+                pnlMultiProgram = new Panel
+                {
+                    Left = 15, Top = 155, Width = 475, Height = 270,
+                    BorderStyle = BorderStyle.FixedSingle,
+                    Visible = false,
+                    BackColor = Color.FromArgb(250, 250, 250)
+                };
+
+                flowPrograms = new FlowLayoutPanel
+                {
+                    Left = 10, Top = 30, Width = 450, Height = 180,
+                    AutoScroll = true,
+                    FlowDirection = FlowDirection.TopDown,
+                    WrapContents = false,
+                    BorderStyle = BorderStyle.None
+                };
+
+                btnAddProgram = new Button
+                {
+                    Left = 10, Top = 215, Width = 150, Height = 25,
+                    Text = "+ Add Program",
+                    BackColor = Color.FromArgb(0, 120, 212),
+                    ForeColor = Color.White,
+                    FlatStyle = FlatStyle.Flat
+                };
+                btnAddProgram.FlatAppearance.BorderSize = 0;
+                btnAddProgram.Click += BtnAddProgram_Click;
+
+                lblAllocatedTime = new Label
+                {
+                    Left = 170, Top = 220, Width = 295, Height = 25,
+                    Text = $"Allocated: {_meetingDurationHours:F1} / {_meetingDurationHours:F1} hrs",
+                    Font = new Font("Segoe UI", 9, FontStyle.Bold),
+                    ForeColor = Color.Green
+                };
+
+                pnlMultiProgram.Controls.AddRange(new Control[] { flowPrograms, btnAddProgram, lblAllocatedTime });
+
+                btnOk = new Button { Left = 310, Top = 123, Width = 80, Height = 28, Text = "OK", DialogResult = DialogResult.OK, TabIndex = 5 };
+                btnCancel = new Button { Left = 400, Top = 123, Width = 80, Height = 28, Text = "Cancel", DialogResult = DialogResult.Cancel, TabIndex = 6 };
+                btnOk.Click += BtnOk_Click;
+
+                Controls.AddRange(new Control[] {
+                    lblProgram, cboProgram, lblActivity, cboActivity, lblStage, cboStage,
+                    chkMultiplePrograms, pnlMultiProgram, btnOk, btnCancel
+                });
+                AcceptButton = btnOk;
+                CancelButton = btnCancel;
+
+                cboProgram.Items.Add("Loading..."); cboProgram.SelectedIndex = 0; cboProgram.Enabled = false;
+                cboActivity.Items.Add("Loading..."); cboActivity.SelectedIndex = 0; cboActivity.Enabled = false;
+                cboStage.Items.Add("Loading..."); cboStage.SelectedIndex = 0; cboStage.Enabled = false;
+
+                var programToSelect = initProgram;
+                var activityToSelect = initActivity;
+                var stageToSelect = initStage;
+
+                this.Shown += async (s, e) =>
+                {
+                    var user = GetCurrentUserEmail() ?? string.Empty;
+                    await Task.WhenAll(
+                        LoadProgramsFromSqlAsync(user, programToSelect),
+                        LoadActivitiesFromSqlAsync(activityToSelect),
+                        LoadStagesFromSqlAsync(stageToSelect)
+                    );
+                };
+            }
+
+            private void ChkMultiplePrograms_CheckedChanged(object sender, EventArgs e)
+            {
+                bool isMulti = chkMultiplePrograms.Checked;
+                if (isMulti)
+                {
+                    this.Height = 530;
+                    btnOk.Top = 435; btnCancel.Top = 435;
+                    btnOk.Left = 320; btnCancel.Left = 410;
+                    cboProgram.Enabled = true; cboActivity.Enabled = true; cboStage.Enabled = true;
+                    pnlMultiProgram.Visible = true;
+                }
+                else
+                {
+                    this.Height = 220;
+                    btnOk.Top = 123; btnCancel.Top = 123;
+                    btnOk.Left = 310; btnCancel.Left = 400;
+                    cboProgram.Enabled = true; cboActivity.Enabled = true; cboStage.Enabled = true;
+                    pnlMultiProgram.Visible = false;
+                    foreach (Control ctrl in flowPrograms.Controls.OfType<ProgramAllocationControl>().ToList())
+                    {
+                        flowPrograms.Controls.Remove(ctrl);
+                        ctrl.Dispose();
+                    }
+                    _programAllocations.Clear();
+                }
+            }
+
+            private void BtnAddProgram_Click(object sender, EventArgs e) => AddProgramAllocationControl();
+
+            private void AddProgramAllocationControl(string initProgram = null, string initActivity = null, string initStage = null)
+            {
+                var allocationControl = new ProgramAllocationControl(
+                    _meetingDurationHours,
+                    cboProgram.Items.Cast<string>().ToList(),
+                    initProgram, initActivity, initStage
+                );
+                allocationControl.OnRemove += (s, ev) =>
+                {
+                    var ctrl = s as ProgramAllocationControl;
+                    _programAllocations.Remove(ctrl.Allocation);
+                    flowPrograms.Controls.Remove(ctrl);
+                    ctrl.Dispose();
+                    UpdateTotalAllocated();
+                };
+                allocationControl.OnHoursChanged += (s, ev) => UpdateTotalAllocated();
+                flowPrograms.Controls.Add(allocationControl);
+                _programAllocations.Add(allocationControl.Allocation);
+                UpdateTotalAllocated();
+            }
+
+            private void UpdateTotalAllocated()
+            {
+                double additionalHours = _programAllocations.Sum(p => p.Hours);
+                double originalProgramHours = _meetingDurationHours - additionalHours;
+                string originalProgram = cboProgram.SelectedItem?.ToString() ?? "Original";
+                lblAllocatedTime.Text = $"Total: {_meetingDurationHours:F1}h ({originalProgram}: {originalProgramHours:F1}h)";
+                bool isValid = originalProgramHours > 0.01;
+                lblAllocatedTime.ForeColor = isValid ? Color.Green : Color.Red;
+            }
+
+            private void BtnOk_Click(object sender, EventArgs e)
+            {
+                if (string.IsNullOrWhiteSpace(cboProgram.SelectedItem?.ToString()))
+                {
+                    MessageBox.Show("Please select a program code.", "Missing Information", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    DialogResult = DialogResult.None;
+                    return;
+                }
+
+                if (chkMultiplePrograms != null && chkMultiplePrograms.Checked)
+                {
+                    if (_programAllocations.Count < 1)
+                    {
+                        MessageBox.Show(
+                            "Please add at least 1 additional program.\n\nIf this meeting only involves one program, please uncheck the 'Add Additional Programs' checkbox.",
+                            "Additional Programs Required", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                        DialogResult = DialogResult.None;
+                        return;
+                    }
+
+                    string originalProgram = cboProgram.SelectedItem?.ToString() ?? "";
+                    var duplicatePrograms = _programAllocations
+                        .Where(p => !string.IsNullOrWhiteSpace(p.ProgramCode) &&
+                                   p.ProgramCode.Equals(originalProgram, StringComparison.OrdinalIgnoreCase))
+                        .ToList();
+
+                    if (duplicatePrograms.Count > 0)
+                    {
+                        MessageBox.Show(
+                            $"Cannot add '{originalProgram}' as an additional program because it's already the original program.\n\nPlease select a different program for the additional allocation.",
+                            "Duplicate Program Error", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                        DialogResult = DialogResult.None;
+                        return;
+                    }
+
+                    double additionalHours = _programAllocations.Sum(p => p.Hours);
+                    if (additionalHours >= _meetingDurationHours)
+                    {
+                        MessageBox.Show(
+                            $"Additional programs ({additionalHours:F2} hrs) cannot equal or exceed total meeting duration ({_meetingDurationHours:F2} hrs).\n\nPlease leave time for the original program.",
+                            "Invalid Allocation", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                        DialogResult = DialogResult.None;
+                        return;
+                    }
+
+                    if (_programAllocations.Any(p => string.IsNullOrWhiteSpace(p.ProgramCode)))
+                    {
+                        MessageBox.Show("Please select a program code for all additional entries.", "Missing Information", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                        DialogResult = DialogResult.None;
+                        return;
+                    }
+                }
+            }
+
+            private static void SelectIfPresent(ComboBox combo, string value)
+            {
+                if (string.IsNullOrWhiteSpace(value)) return;
+                var idx = combo.FindStringExact(value);
+                if (idx >= 0) combo.SelectedIndex = idx;
+            }
+
+            private static string GetCurrentUserEmail()
+            {
+                Outlook.NameSpace session = null;
+                Outlook.Recipient currentUser = null;
+                Outlook.AddressEntry addrEntry = null;
+                try
+                {
+                    session = Globals.ThisAddIn.Application.Session;
+                    currentUser = session.CurrentUser;
+                    addrEntry = currentUser?.AddressEntry;
+                    if (addrEntry != null)
+                    {
+                        if ("EX".Equals(addrEntry.Type, StringComparison.OrdinalIgnoreCase))
+                        {
+                            const string PR_SMTP_ADDRESS = "http://schemas.microsoft.com/mapi/proptag/0x39FE001E";
+                            var smtp = addrEntry.PropertyAccessor.GetProperty(PR_SMTP_ADDRESS) as string;
+                            if (!string.IsNullOrWhiteSpace(smtp)) return smtp;
+                        }
+                        if (!string.IsNullOrWhiteSpace(addrEntry.Address)) return addrEntry.Address;
+                    }
+                    return currentUser?.Name ?? string.Empty;
+                }
+                catch { return string.Empty; }
+                finally
+                {
+                    if (addrEntry != null) { Marshal.ReleaseComObject(addrEntry); addrEntry = null; }
+                    if (currentUser != null) { Marshal.ReleaseComObject(currentUser); currentUser = null; }
+                    if (session != null) { Marshal.ReleaseComObject(session); session = null; }
+                }
+            }
+        }
+
+        private class StageCodeData
+        {
+            public string StageCode { get; set; }
+            public string StageDescription { get; set; }
+            public int SortOrder { get; set; }
+            public override string ToString() => StageDescription;
+        }
+
+        private class ActivityCodeData
+        {
+            public string ActivityCode { get; set; }
+            public string ActivityDescription { get; set; }
+            public int SortOrder { get; set; }
+            public override string ToString() => ActivityDescription;
+        }
+
+        private class ProgramAllocationControl : Panel
+        {
+            public ProgramAllocation Allocation { get; private set; }
+            public event EventHandler OnRemove;
+            public event EventHandler OnHoursChanged;
+
+            private ComboBox cboProgram;
+            private ComboBox cboActivity;
+            private ComboBox cboStage;
+            private TrackBar trackHours;
+            private Label lblHours;
+            private Button btnRemove;
+            private double _maxHours;
+
+            public ProgramAllocationControl(double maxHours, List<string> programs, string initProgram = null, string initActivity = null, string initStage = null)
+            {
+                _maxHours = maxHours;
+                Allocation = new ProgramAllocation { Hours = maxHours };
+
+                Width = 450; Height = 135;
+                BorderStyle = BorderStyle.FixedSingle;
+                Margin = new Padding(0, 0, 0, 8);
+                BackColor = Color.FromArgb(250, 250, 250);
+
+                cboProgram = new ComboBox { Left = 10, Top = 10, Width = 350, DropDownStyle = ComboBoxStyle.DropDownList };
+                cboProgram.Items.AddRange(programs.ToArray());
+                if (!string.IsNullOrWhiteSpace(initProgram))
+                {
+                    var idx = cboProgram.FindStringExact(initProgram);
+                    if (idx >= 0) cboProgram.SelectedIndex = idx;
+                }
+                if (cboProgram.SelectedIndex < 0 && cboProgram.Items.Count > 0) cboProgram.SelectedIndex = 0;
+                cboProgram.SelectedIndexChanged += (s, e) => Allocation.ProgramCode = cboProgram.SelectedItem?.ToString() ?? "";
+
+                cboActivity = new ComboBox { Left = 10, Top = 40, Width = 350, DropDownStyle = ComboBoxStyle.DropDownList };
+                cboActivity.Items.AddRange(new object[] { "Work Time", "Client Communication", "Vendor Communication", "Internal Communication" });
+                if (!string.IsNullOrWhiteSpace(initActivity))
+                {
+                    var idx = cboActivity.FindStringExact(initActivity);
+                    if (idx >= 0) cboActivity.SelectedIndex = idx;
+                }
+                if (cboActivity.SelectedIndex < 0 && cboActivity.Items.Count > 0) cboActivity.SelectedIndex = 0;
+                cboActivity.SelectedIndexChanged += (s, e) => Allocation.ActivityCode = cboActivity.SelectedItem?.ToString() ?? "";
+
+                cboStage = new ComboBox { Left = 10, Top = 70, Width = 350, DropDownStyle = ComboBoxStyle.DropDownList };
+                cboStage.Items.AddRange(new object[] { "Client Meeting", "Internal Meeting", "Email", "Vendor Research", "Meeting", "Timesheet", "Design", "Registration" });
+                if (!string.IsNullOrWhiteSpace(initStage))
+                {
+                    var idx = cboStage.FindStringExact(initStage);
+                    if (idx >= 0) cboStage.SelectedIndex = idx;
+                }
+                if (cboStage.SelectedIndex < 0 && cboStage.Items.Count > 0) cboStage.SelectedIndex = 0;
+                cboStage.SelectedIndexChanged += (s, e) => Allocation.StageCode = cboStage.SelectedItem?.ToString() ?? "";
+
+                int maxMinutes = (int)(maxHours * 60);
+                trackHours = new TrackBar
+                {
+                    Left = 10, Top = 100, Width = 300,
+                    Minimum = 0, Maximum = maxMinutes, Value = maxMinutes,
+                    TickFrequency = 15, SmallChange = 5, LargeChange = 15
+                };
+                trackHours.ValueChanged += TrackHours_ValueChanged;
+
+                int initialMinutes = (int)(Allocation.Hours * 60);
+                lblHours = new Label
+                {
+                    Left = 320, Top = 105, Width = 70,
+                    Text = FormatTimeLabel(initialMinutes),
+                    Font = new Font("Segoe UI", 8, FontStyle.Bold)
+                };
+
+                btnRemove = new Button
+                {
+                    Left = 370, Top = 10, Width = 70, Height = 25,
+                    Text = "Delete",
+                    BackColor = Color.Red, ForeColor = Color.White,
+                    FlatStyle = FlatStyle.Flat,
+                    Font = new Font("Segoe UI", 8, FontStyle.Bold)
+                };
+                btnRemove.FlatAppearance.BorderSize = 0;
+                btnRemove.Click += (s, e) => OnRemove?.Invoke(this, EventArgs.Empty);
+
+                Controls.AddRange(new Control[] { cboProgram, cboActivity, cboStage, trackHours, lblHours, btnRemove });
+
+                Allocation.ProgramCode = cboProgram.SelectedItem?.ToString() ?? "";
+                Allocation.ActivityCode = cboActivity.SelectedItem?.ToString() ?? "";
+                Allocation.StageCode = cboStage.SelectedItem?.ToString() ?? "";
+            }
+
+            private string FormatTimeLabel(int totalMinutes)
+            {
+                if (totalMinutes < 60) return $"{totalMinutes}mins";
+                int hours = totalMinutes / 60;
+                int minutes = totalMinutes % 60;
+                return minutes == 0 ? $"{hours}h" : $"{hours}h {minutes}mins";
+            }
+
+            private void TrackHours_ValueChanged(object sender, EventArgs e)
+            {
+                int minutes = trackHours.Value;
+                Allocation.Hours = minutes / 60.0;
+                lblHours.Text = FormatTimeLabel(minutes);
+                OnHoursChanged?.Invoke(this, EventArgs.Empty);
+            }
+        }
+    }
+}

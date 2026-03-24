@@ -1437,15 +1437,22 @@ namespace OutlookAddIn1
 
             var torontoTz = TimeZoneInfo.FindSystemTimeZoneById("Eastern Standard Time");
             var nowTorontoTime = TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, torontoTz);
-            var startDateTorontoTime = nowTorontoTime.AddDays(-7);
+            // Use midnight (Date) so the window matches the Outlook filter exactly
+            var startDateTorontoTime = nowTorontoTime.Date.AddDays(-7);
 
+            // Fetch BOTH global_id and entry_id so we can match against either ID
+            // (Outlook may return GlobalAppointmentID or fall back to EntryID)
             var submittedOrIgnoredKeys = new HashSet<string>();
             using (var cn = new SqlConnection(connString))
             {
                 await cn.OpenAsync();
-                using (var cmd = new SqlCommand("dbo.Timesheet_GetSubmittedOrIgnoredKeys", cn))
+                using (var cmd = new SqlCommand(@"
+                    SELECT DISTINCT global_id, entry_id, start_utc
+                    FROM db_owner.ytimesheet
+                    WHERE user_name = @email
+                      AND status IN ('submitted', 'ignored')
+                      AND start_utc >= @startDate", cn))
                 {
-                    cmd.CommandType = CommandType.StoredProcedure;
                     cmd.Parameters.Add(new SqlParameter("@email", SqlDbType.NVarChar, 320) { Value = email });
                     cmd.Parameters.Add(new SqlParameter("@startDate", SqlDbType.DateTime2) { Value = startDateTorontoTime });
 
@@ -1453,16 +1460,22 @@ namespace OutlookAddIn1
                     {
                         while (await reader.ReadAsync())
                         {
-                            var globalId = reader.GetString(0);
-                            var startUtc = reader.GetDateTime(1);
-                            var key = $"{globalId}|{startUtc:yyyy-MM-dd}";
-                            submittedOrIgnoredKeys.Add(key);
+                            var dbGlobalId = reader["global_id"] as string ?? "";
+                            var dbEntryId  = reader["entry_id"]  as string ?? "";
+                            var startTime  = reader.GetDateTime(reader.GetOrdinal("start_utc"));
+                            var dateStr    = $"{startTime:yyyy-MM-dd}";
+
+                            // Add keys for BOTH IDs so either will match the Outlook check
+                            if (!string.IsNullOrWhiteSpace(dbGlobalId))
+                                submittedOrIgnoredKeys.Add($"{dbGlobalId}|{dateStr}");
+                            if (!string.IsNullOrWhiteSpace(dbEntryId))
+                                submittedOrIgnoredKeys.Add($"{dbEntryId}|{dateStr}");
                         }
                     }
                 }
             }
 
-            System.Diagnostics.Debug.WriteLine($"Found {submittedOrIgnoredKeys.Count} already submitted/ignored events in database");
+            System.Diagnostics.Debug.WriteLine($"Found {submittedOrIgnoredKeys.Count} already submitted/ignored keys in database");
 
             await Task.Run(() =>
             {
@@ -1497,12 +1510,14 @@ namespace OutlookAddIn1
                             appt = filteredItems[i] as Microsoft.Office.Interop.Outlook.AppointmentItem;
                             if (appt == null) continue;
 
-                            // GlobalAppointmentID can throw for certain non-recurring appointments;
-                            // fall back to EntryID so they aren't silently dropped
-                            string globalId = "";
-                            try { globalId = appt.GlobalAppointmentID ?? ""; } catch { }
-                            if (string.IsNullOrWhiteSpace(globalId))
-                                globalId = appt.EntryID ?? "";
+                            // Grab both IDs — GlobalAppointmentID can throw for some items
+                            string globalAppointmentId = "";
+                            try { globalAppointmentId = appt.GlobalAppointmentID ?? ""; } catch { }
+                            string entryId = appt.EntryID ?? "";
+
+                            // Use GlobalAppointmentID when available, else EntryID
+                            string globalId = !string.IsNullOrWhiteSpace(globalAppointmentId)
+                                ? globalAppointmentId : entryId;
 
                             var apptStartUtc = appt.StartUTC;
                             var recurrenceState = appt.RecurrenceState;
@@ -1513,14 +1528,23 @@ namespace OutlookAddIn1
                                 continue;
                             }
 
-                            var apptStartTorontoTime = TimeZoneInfo.ConvertTimeFromUtc(apptStartUtc, torontoTz);
-                            var compositeKey = $"{globalId}|{apptStartTorontoTime:yyyy-MM-dd}";
-
-                            // Skip if we have no identifier at all, or already submitted/ignored
-                            if (string.IsNullOrWhiteSpace(globalId) || submittedOrIgnoredKeys.Contains(compositeKey))
-                            {
+                            // Skip if no usable identifier
+                            if (string.IsNullOrWhiteSpace(globalId))
                                 continue;
-                            }
+
+                            var apptStartTorontoTime = TimeZoneInfo.ConvertTimeFromUtc(apptStartUtc, torontoTz);
+                            var dateStr = $"{apptStartTorontoTime:yyyy-MM-dd}";
+
+                            // Check BOTH IDs against the submitted/ignored set
+                            // (DB may have stored GlobalAppointmentID or EntryID)
+                            bool alreadyProcessed =
+                                (!string.IsNullOrWhiteSpace(globalAppointmentId) &&
+                                 submittedOrIgnoredKeys.Contains($"{globalAppointmentId}|{dateStr}")) ||
+                                (!string.IsNullOrWhiteSpace(entryId) &&
+                                 submittedOrIgnoredKeys.Contains($"{entryId}|{dateStr}"));
+
+                            if (alreadyProcessed)
+                                continue;
 
                             if (appt.MeetingStatus == Microsoft.Office.Interop.Outlook.OlMeetingStatus.olMeetingCanceled ||
                                 appt.MeetingStatus == Microsoft.Office.Interop.Outlook.OlMeetingStatus.olMeetingReceivedAndCanceled)

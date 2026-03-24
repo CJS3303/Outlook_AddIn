@@ -803,16 +803,23 @@ namespace OutlookAddIn1
             {
                 if (_manageTimesheetPane == null)
                 {
+                    const int FixedWidth = 370;
                     var paneControl = new ManageTimesheetPane();
                     _manageTimesheetPane = this.CustomTaskPanes.Add(paneControl, "Manage Timesheet");
                     _manageTimesheetPane.DockPosition = Microsoft.Office.Core.MsoCTPDockPosition.msoCTPDockPositionRight;
                     _manageTimesheetPane.DockPositionRestrict = Microsoft.Office.Core.MsoCTPDockPositionRestrict.msoCTPDockPositionRestrictNoHorizontal;
-                    _manageTimesheetPane.Width = 370;
+                    _manageTimesheetPane.Width = FixedWidth;
 
-                    // ✅ FIX: Set DockPositionRestrict to prevent dragging/resizing the pane width
-                    // ✅ NEW: Use Width restriction to keep consistent 370px width
-                    // Note: Unfortunately, CustomTaskPane doesn't have a MaxWidth property,
-                    // but setting DockPositionRestrictNoHorizontal prevents horizontal resize
+                    // Snap the width back whenever the user tries to drag-resize
+                    paneControl.SizeChanged += (s, ev) =>
+                    {
+                        try
+                        {
+                            if (_manageTimesheetPane != null && _manageTimesheetPane.Width != FixedWidth)
+                                _manageTimesheetPane.Width = FixedWidth;
+                        }
+                        catch { /* pane may be disposing */ }
+                    };
                 }
 
                 _manageTimesheetPane.Visible = true;

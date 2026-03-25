@@ -551,17 +551,15 @@ namespace OutlookAddIn1
             // Reserve scrollbar width so cards are never clipped when the bar shows on hover
             int w = flowSubmitted.ClientSize.Width - flowSubmitted.Padding.Horizontal - SystemInformation.VerticalScrollBarWidth;
 
-            // ── shared layout constants (identical to unsubmitted cards) ──────
+            // ── layout constants — identical to unsubmitted cards ─────────────
             const int subjectY  = 5;
             const int subjectH  = 24;
             const int timeY     = 30;
             const int timeH     = 20;
-            const int infoY     = 52;
-            const int infoH     = 18;
-            const int btnY      = 73;
+            const int btnY      = 53;   // immediately after time row
             const int btnH      = 27;
             const int btnGap    = 5;
-            int panelHeight     = btnY + btnH + 16;   // extra clearance for border/DPI
+            int panelHeight     = btnY + btnH + 6;
 
             flowSubmitted.Controls.Add(new Label
             {
@@ -605,35 +603,6 @@ namespace OutlookAddIn1
                     Size      = new Size(w - 15, timeH),
                     ForeColor = Color.FromArgb(100, 100, 100)
                 });
-
-                // Info line: program(s) for submitted, status label for ignored
-                if (item.IsIgnored)
-                {
-                    p.Controls.Add(new Label
-                    {
-                        Text      = "Ignored",
-                        Font      = new Font("Segoe UI", 8),
-                        Location  = new Point(5, infoY),
-                        Size      = new Size(w - 15, infoH),
-                        ForeColor = Color.FromArgb(150, 0, 0)
-                    });
-                }
-                else
-                {
-                    string programsText = item.Records.Count > 1
-                        ? $"Programs: {string.Join(", ", item.Records.Select(r => r.ProgramCode))}"
-                        : $"Program: {first.ProgramCode} | Activity: {first.ActivityCode}";
-
-                    p.Controls.Add(new Label
-                    {
-                        Text         = programsText,
-                        Font         = new Font("Segoe UI", 8),
-                        Location     = new Point(5, infoY),
-                        Size         = new Size(w - 15, infoH),
-                        ForeColor    = Color.FromArgb(100, 100, 100),
-                        AutoEllipsis = true
-                    });
-                }
 
                 // Buttons
                 if (item.IsIgnored)

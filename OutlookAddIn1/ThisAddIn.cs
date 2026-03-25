@@ -851,6 +851,13 @@ namespace OutlookAddIn1
                 }
 
                 _manageTimesheetPane.Visible = true;
+
+                // Explicitly trigger data load after pane is visible.
+                // OnVisibleChanged can misfire during CustomTaskPanes.Add(), so this
+                // guarantees data loads on first open regardless of event timing.
+                var ctrl = _manageTimesheetPane.Control as ManageTimesheetPane;
+                if (ctrl != null)
+                    _ = ctrl.LoadDataAsync();
             }
             catch (Exception ex)
             {

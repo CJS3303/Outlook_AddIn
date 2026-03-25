@@ -88,7 +88,7 @@ namespace OutlookAddIn1
             }
         }
 
-        private async Task LoadDataAsync()
+        public async Task LoadDataAsync()
         {
             try
             {

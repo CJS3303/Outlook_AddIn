@@ -14,6 +14,7 @@ namespace OutlookAddIn1
         private Outlook.Items _calendarItems;
         private Outlook.MAPIFolder _calendarFolder; // store to release on shutdown
         private Microsoft.Office.Tools.CustomTaskPane _manageTimesheetPane;
+        private System.Windows.Forms.Timer _paneWidthTimer;
 
         // PERFORMANCE: Cache current user email (avoid repeated COM calls)
         private string _cachedUserEmail = null;
@@ -85,6 +86,12 @@ namespace OutlookAddIn1
                 }
 
                 // Clean up custom task pane
+                if (_paneWidthTimer != null)
+                {
+                    _paneWidthTimer.Stop();
+                    _paneWidthTimer.Dispose();
+                    _paneWidthTimer = null;
+                }
                 if (_manageTimesheetPane != null)
                 {
                     this.CustomTaskPanes.Remove(_manageTimesheetPane);
@@ -811,35 +818,35 @@ namespace OutlookAddIn1
                 : GetCurrentUserSmtpFromSession();
         }
 
+        private const int PaneFixedWidth = 370;
+
         public void ShowManageTimesheetPane()
         {
             try
             {
                 if (_manageTimesheetPane == null)
                 {
-                    const int FixedWidth = 370;
                     var paneControl = new ManageTimesheetPane();
                     _manageTimesheetPane = this.CustomTaskPanes.Add(paneControl, "Manage Timesheet");
                     _manageTimesheetPane.DockPosition = Microsoft.Office.Core.MsoCTPDockPosition.msoCTPDockPositionRight;
                     _manageTimesheetPane.DockPositionRestrict = Microsoft.Office.Core.MsoCTPDockPositionRestrict.msoCTPDockPositionRestrictNoHorizontal;
-                    _manageTimesheetPane.Width = FixedWidth;
+                    _manageTimesheetPane.Width = PaneFixedWidth;
 
-                    // Snap the width back whenever the user tries to drag-resize.
-                    // Guard flag prevents re-entrant loop (setting Width fires SizeChanged again).
-                    bool resizing = false;
-                    paneControl.SizeChanged += (s, ev) =>
+                    // Debounced resize guard: snap back to fixed width after user stops dragging.
+                    // Using a timer avoids the re-entrant SizeChanged cascade that caused >1 min freeze.
+                    _paneWidthTimer = new System.Windows.Forms.Timer { Interval = 150 };
+                    _paneWidthTimer.Tick += (ts, te) =>
                     {
-                        if (resizing) return;
-                        try
-                        {
-                            if (_manageTimesheetPane != null && _manageTimesheetPane.Width != FixedWidth)
-                            {
-                                resizing = true;
-                                _manageTimesheetPane.Width = FixedWidth;
-                            }
-                        }
-                        catch { /* pane may be disposing */ }
-                        finally { resizing = false; }
+                        _paneWidthTimer.Stop();
+                        if (_manageTimesheetPane != null && _manageTimesheetPane.Width != PaneFixedWidth)
+                            _manageTimesheetPane.Width = PaneFixedWidth;
+                    };
+
+                    _manageTimesheetPane.SizeChanged += (s, e) =>
+                    {
+                        // Restart timer on every drag tick — fires once user releases
+                        _paneWidthTimer.Stop();
+                        _paneWidthTimer.Start();
                     };
                 }
 

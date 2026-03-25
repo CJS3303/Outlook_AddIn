@@ -246,79 +246,87 @@ namespace OutlookAddIn1
         {
             _fontSubmittedTitle = new Font("Segoe UI", 14, FontStyle.Bold);
 
+            // Top bar: title + refresh button at fixed height
+            var topSubmitted = new Panel { Dock = DockStyle.Top, Height = 45 };
+
             var lblSubmittedTitle = new Label
             {
                 Text = "Submitted",
                 Font = _fontSubmittedTitle,
                 Location = new Point(15, 8),
-                Size = new Size(290, 30),
+                Size = new Size(200, 30),
                 TextAlign = ContentAlignment.MiddleLeft
             };
 
             btnRefreshSubmitted = new Button
             {
                 Text = "↻",
-                Location = new Point(305, 8),
+                Anchor = AnchorStyles.Top | AnchorStyles.Right,
                 Size = new Size(35, 25)
             };
+            btnRefreshSubmitted.Location = new Point(topSubmitted.Width - 45, 10);
             btnRefreshSubmitted.Click += async (s, e) => await LoadSubmittedMeetingsAsync();
+            topSubmitted.Controls.AddRange(new Control[] { lblSubmittedTitle, btnRefreshSubmitted });
+            topSubmitted.Resize += (s, e) =>
+                btnRefreshSubmitted.Location = new Point(topSubmitted.Width - 45, 10);
 
+            // Flow panel fills the rest of the tab page
             flowSubmitted = new FlowLayoutPanel
             {
-                Location = new Point(15, 45),
-                Size = new Size(325, 640),
+                Dock = DockStyle.Fill,
                 AutoScroll = true,
                 FlowDirection = FlowDirection.TopDown,
                 WrapContents = false,
                 Padding = new Padding(0, 0, 0, 0)
             };
 
-            tabSubmitted.Controls.AddRange(new Control[]
-            {
-                lblSubmittedTitle, btnRefreshSubmitted, flowSubmitted
-            });
+            tabSubmitted.Controls.Add(flowSubmitted);   // Fill added first
+            tabSubmitted.Controls.Add(topSubmitted);    // Top dock applied after
         }
 
         private void InitializeUnsubmittedTab()
         {
             _fontUnsubmittedTitle = new Font("Segoe UI", 14, FontStyle.Bold);
 
+            var topUnsubmitted = new Panel { Dock = DockStyle.Top, Height = 45 };
+
             var lblUnsubmittedTitle = new Label
             {
                 Text = "Unsubmitted",
                 Font = _fontUnsubmittedTitle,
                 Location = new Point(15, 8),
-                Size = new Size(290, 30),
+                Size = new Size(200, 30),
                 TextAlign = ContentAlignment.MiddleLeft
             };
 
             btnRefreshUnsubmitted = new Button
             {
                 Text = "↻",
-                Location = new Point(305, 8),
+                Anchor = AnchorStyles.Top | AnchorStyles.Right,
                 Size = new Size(35, 25)
             };
+            btnRefreshUnsubmitted.Location = new Point(topUnsubmitted.Width - 45, 10);
             btnRefreshUnsubmitted.Click += async (s, e) =>
             {
                 _cachedUnsubmittedMeetings = null;
                 _cacheExpiry = DateTime.MinValue;
                 await LoadUnsubmittedMeetingsAsync();
             };
+            topUnsubmitted.Controls.AddRange(new Control[] { lblUnsubmittedTitle, btnRefreshUnsubmitted });
+            topUnsubmitted.Resize += (s, e) =>
+                btnRefreshUnsubmitted.Location = new Point(topUnsubmitted.Width - 45, 10);
 
             flowUnsubmitted = new FlowLayoutPanel
             {
-                Location = new Point(15, 45),
-                Size = new Size(325, 640),
+                Dock = DockStyle.Fill,
                 AutoScroll = true,
                 FlowDirection = FlowDirection.TopDown,
                 WrapContents = false,
                 Padding = new Padding(0, 0, 0, 0)
             };
 
-            tabUnsubmitted.Controls.AddRange(new Control[]
-            {
-                lblUnsubmittedTitle, btnRefreshUnsubmitted, flowUnsubmitted
-            });
+            tabUnsubmitted.Controls.Add(flowUnsubmitted);
+            tabUnsubmitted.Controls.Add(topUnsubmitted);
         }
 
         // ✅ Load submitted from database (shows: Today, Yesterday, Last Week + Cancel/Un-Ignore buttons)

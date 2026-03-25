@@ -1,11 +1,7 @@
 ﻿using System;
-using System.IO;
-using System.Text;
-using System.Text.RegularExpressions;
 using System.Linq;
 using Outlook = Microsoft.Office.Interop.Outlook;
 using Office = Microsoft.Office.Core;
-using OutlookAddIn1;
 
 namespace OutlookAddIn1
 {
@@ -104,13 +100,9 @@ namespace OutlookAddIn1
             }
         }
 
-
-
         private void CalendarItems_ItemAdd(object Item)
         {
-            var appt = Item as Outlook.AppointmentItem;
-            if (appt != null)
-                ExportProgramMeta(appt, "ItemAdd");
+            // Currently no action needed on ItemAdd — timesheet submission is manual
         }
 
         private void CalendarItems_ItemChange(object Item)
@@ -386,7 +378,6 @@ namespace OutlookAddIn1
 
                     // ✅ CRITICAL: Check if timesheet already exists in database
                     // Only auto-submit on ItemSend if the user has ALREADY submitted via "Submit Timesheet"
-                    bool hasExistingTimesheet = false;
                     try
                     {
                         var tempRec = new MeetingRecord
@@ -397,12 +388,9 @@ namespace OutlookAddIn1
                             UserDisplayName = organizerEmail
                         };
 
-                        // ✅ Use Task.Result for synchronous call in non-async method
                         var existing = DbWriter.GetExistingTimesheetAsync(tempRec).Result;
 
-                        hasExistingTimesheet = existing != null;
-
-                        if (!hasExistingTimesheet)
+                        if (existing == null)
                         {
                             System.Diagnostics.Debug.WriteLine($"ItemSend: Skipping auto-submit for new meeting '{subject}' - user must manually submit timesheet");
                             return; // ✅ EXIT: Don't auto-submit new meetings!
@@ -649,66 +637,10 @@ namespace OutlookAddIn1
             catch { return string.Empty; }
         }
 
-        private static void ExportProgramMeta(Outlook.AppointmentItem appt, string source)
-        {
-            if (appt == null) return;
-
-            // Read your custom properties
-            var program = GetUP(appt, "ProgramCode");
-            var activity = GetUP(appt, "ActivityCode");
-            var stage = GetUP(appt, "StageCode");
-
-            // Fallback: parse from subject like "[KIA-0523] ..."
-            if (string.IsNullOrWhiteSpace(program))
-                program = ExtractSubjectCode(appt.Subject);
-
-            //// Build a compact record
-            //var record = new MeetingRecord
-            //{
-            //    Source = source,
-            //    EntryId = appt.EntryID,                           // stable after save
-            //    //GlobalId = Safe<string>(() => appt.GlobalAppointmentID),
-            //    Subject = appt.Subject ?? "",
-            //    StartUtc = appt.StartUTC,
-            //    EndUtc = appt.EndUTC,
-            //    ProgramCode = program ?? "",
-            //    ActivityCode = activity ?? "",
-            //    StageCode = stage ?? ""
-            //    // LastModified = appt.LastModificationTime
-            //};
-
-            //// === Transport: CSV for POC ===
-            //EventIo.LogCsv(record);
-
-
-        }
-
-        private static string GetUP(Outlook.AppointmentItem appt, string name)
-        {
-            try
-            {
-                var ups = appt.UserProperties;
-                var up = ups != null ? ups.Find(name) : null;
-                return up != null && up.Value != null ? up.Value.ToString() : "";
-            }
-            catch { return ""; }
-        }
-
-        private static string ExtractSubjectCode(string subject)
-        {
-            if (string.IsNullOrEmpty(subject)) return "";
-            var m = Regex.Match(subject, @"\[(?<code>[^\[\]]+)\]");
-            return m.Success ? m.Groups["code"].Value : "";
-        }
-
         private static T Safe<T>(Func<T> f)
         {
             try { return f(); } catch { return default(T); }
         }
-
-        //private static readonly string CsvPath = Path.Combine(
-        //    Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory),
-        //    "meeting_events.csv");
 
         private static string GetCurrentUserSmtp(Outlook.AppointmentItem appt)
         {

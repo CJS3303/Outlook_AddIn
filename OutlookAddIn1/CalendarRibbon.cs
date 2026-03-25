@@ -1,11 +1,7 @@
-﻿using Microsoft.Data.SqlClient;
-using System;
-using System.Configuration;
-using System.Data;
+﻿using System;
 using System.Drawing;
 using System.Linq;
 using System.Runtime.InteropServices;
-using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 using System.Windows.Forms;
 using Office = Microsoft.Office.Core;
@@ -17,14 +13,6 @@ namespace OutlookAddIn1
     public class CalendarRibbon : Office.IRibbonExtensibility
     {
         private Office.IRibbonUI _ribbon;
-
-        // Lazy: registry read deferred until first actual use (not during ribbon creation)
-        private static readonly Lazy<TimeZoneInfo> _lazyTorontoTz = new Lazy<TimeZoneInfo>(() =>
-        {
-            try { return TimeZoneInfo.FindSystemTimeZoneById("Eastern Standard Time"); }
-            catch { return TimeZoneInfo.Local; }
-        });
-        private static TimeZoneInfo TorontoTimeZone => _lazyTorontoTz.Value;
 
         private string ExplorerTabsXml() => @"
   <tab idMso='TabCalendar'>
@@ -822,14 +810,6 @@ namespace OutlookAddIn1
 
             return string.Join("; ", recipientEmails);
         }
-
-        // Helper to get Toronto time zone (cached)
-        private static TimeZoneInfo GetTorontoTimeZone()
-        {
-            return TorontoTimeZone;
-        }
-
-
 
         private string GetCurrentUserEmailAddress()
         {

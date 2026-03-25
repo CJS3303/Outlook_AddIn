@@ -407,6 +407,8 @@
       <DependentUpon>Settings.settings</DependentUpon>
     </Compile>
     <EmbeddedResource Include="Resources\ManageTimesheet.png" />
+    <EmbeddedResource Include="Resources\Submit.png" />
+    <EmbeddedResource Include="Resources\Cancel Submit.png" />
     <Compile Include="CalendarRibbon.cs" />
     <Compile Include="ThisAddIn.cs">
       <SubType>Code</SubType>

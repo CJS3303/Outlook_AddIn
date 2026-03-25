@@ -27,8 +27,8 @@ namespace OutlookAddIn1
         private string ExplorerContextMenusXml() => @"
   <contextMenus>
     <contextMenu idMso='ContextMenuCalendarItem'>
-      <button id='SubmitTimesheet' label='Edit Timesheet' onAction='OnSubmitTimesheet'/>
-      <button id='CancelTimesheet' label='Cancel Timesheet Submission' onAction='OnCancelTimesheet'/>
+      <button id='SubmitTimesheet' label='Edit Timesheet' getImage='GetSubmitImage' onAction='OnSubmitTimesheet'/>
+      <button id='CancelTimesheet' label='Cancel Timesheet Submission' getImage='GetCancelTimesheetImage' onAction='OnCancelTimesheet'/>
     </contextMenu>
   </contextMenus>";
 
@@ -54,23 +54,31 @@ namespace OutlookAddIn1
 
         public void OnRibbonLoad(Office.IRibbonUI ribbonUI) { _ribbon = ribbonUI; }
 
-        public Bitmap GetManageTimesheetImage(Office.IRibbonControl control)
+        private static Bitmap LoadEmbeddedBitmap(string resourceName)
         {
             try
             {
                 var asm = System.Reflection.Assembly.GetExecutingAssembly();
-                using (var stream = asm.GetManifestResourceStream("OutlookAddIn1.Resources.ManageTimesheet.png"))
+                using (var stream = asm.GetManifestResourceStream(resourceName))
                 {
-                    if (stream != null)
-                        return new Bitmap(stream);
+                    if (stream != null) return new Bitmap(stream);
                 }
             }
             catch (Exception ex)
             {
-                System.Diagnostics.Debug.WriteLine($"GetManageTimesheetImage failed: {ex.Message}");
+                System.Diagnostics.Debug.WriteLine($"LoadEmbeddedBitmap({resourceName}) failed: {ex.Message}");
             }
             return null;
         }
+
+        public Bitmap GetManageTimesheetImage(Office.IRibbonControl control)
+            => LoadEmbeddedBitmap("OutlookAddIn1.Resources.ManageTimesheet.png");
+
+        public Bitmap GetSubmitImage(Office.IRibbonControl control)
+            => LoadEmbeddedBitmap("OutlookAddIn1.Resources.Submit.png");
+
+        public Bitmap GetCancelTimesheetImage(Office.IRibbonControl control)
+            => LoadEmbeddedBitmap("OutlookAddIn1.Resources.Cancel Submit.png");
 
         public void OnManageTimesheet(Office.IRibbonControl control)
         {

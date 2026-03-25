@@ -77,6 +77,32 @@ namespace OutlookAddIn1
         private List<MeetingRecord> _cachedUnsubmittedMeetings = null;
         private DateTime _cacheExpiry = DateTime.MinValue;
 
+        // Win32: hide scrollbar visually while keeping mouse-wheel scrolling functional
+        [DllImport("user32.dll")] private static extern bool ShowScrollBar(IntPtr hWnd, int wBar, bool bShow);
+        private const int SB_VERT = 1;
+
+        private static void AttachAutoHideScrollbar(FlowLayoutPanel panel)
+        {
+            // Hide scrollbar once the handle exists
+            panel.HandleCreated += (s, e) => ShowScrollBar(panel.Handle, SB_VERT, false);
+
+            // Show on mouse-enter / any scroll activity, hide on mouse-leave
+            panel.MouseEnter  += (s, e) => ShowScrollBar(panel.Handle, SB_VERT, true);
+            panel.MouseLeave  += (s, e) => ShowScrollBar(panel.Handle, SB_VERT, false);
+            panel.Scroll      += (s, e) => ShowScrollBar(panel.Handle, SB_VERT, true);
+
+            // Mouse-wheel still scrolls even when bar is hidden
+            panel.MouseWheel += (s, e) =>
+            {
+                ShowScrollBar(panel.Handle, SB_VERT, true);
+                int newVal = Math.Max(panel.VerticalScroll.Minimum,
+                             Math.Min(panel.VerticalScroll.Maximum,
+                                      panel.VerticalScroll.Value - e.Delta));
+                panel.VerticalScroll.Value = newVal;
+                panel.PerformLayout();
+            };
+        }
+
         public ManageTimesheetPane()
         {
             this.AutoScaleMode = AutoScaleMode.None;
@@ -222,7 +248,7 @@ namespace OutlookAddIn1
             pnlSummary = new Panel
             {
                 Location = new Point(15, 350),
-                Size = new Size(310, 60),
+                Size = new Size(310, 90),
                 BackColor = Color.Transparent
             };
             pnlSummary.Paint += PnlSummary_Paint;
@@ -291,6 +317,7 @@ namespace OutlookAddIn1
                 Padding = new Padding(10, 5, 10, 0)
             };
 
+            AttachAutoHideScrollbar(flowSubmitted);
             tabSubmitted.Controls.Add(flowSubmitted);   // Fill added first
             tabSubmitted.Controls.Add(topSubmitted);    // Top dock applied after
         }
@@ -336,6 +363,7 @@ namespace OutlookAddIn1
                 Padding = new Padding(10, 5, 10, 0)
             };
 
+            AttachAutoHideScrollbar(flowUnsubmitted);
             tabUnsubmitted.Controls.Add(flowUnsubmitted);
             tabUnsubmitted.Controls.Add(topUnsubmitted);
         }
@@ -520,7 +548,8 @@ namespace OutlookAddIn1
         // submitted tab. Submitted and ignored cards are interleaved, sorted by time.
         private void AddSubmittedTabSection(string title, List<SubmittedTabItem> items)
         {
-            int w = flowSubmitted.ClientSize.Width - flowSubmitted.Padding.Horizontal;
+            // Reserve scrollbar width so cards are never clipped when the bar shows on hover
+            int w = flowSubmitted.ClientSize.Width - flowSubmitted.Padding.Horizontal - SystemInformation.VerticalScrollBarWidth;
 
             // ── shared layout constants (identical to unsubmitted cards) ──────
             const int subjectY  = 5;
@@ -1189,20 +1218,25 @@ namespace OutlookAddIn1
             var g = e.Graphics;
             g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.ClearTypeGridFit;
 
-            int x = 0;
-            int y = 0;
+            int x = 2;
+            int y = 2;
+            int w = pnlSummary.ClientSize.Width - 4;
 
+            // Use NoClip so text is never sliced mid-character even at high DPI
+            using (var sf = new StringFormat { FormatFlags = StringFormatFlags.NoClip })
             using (var targetBrush = new SolidBrush(_weeklyTargetColor))
-            using (var grayBrush = new SolidBrush(Color.Gray))
-            using (var deltaBrush = new SolidBrush(_lastWeekDeltaColor))
+            using (var grayBrush   = new SolidBrush(Color.Gray))
+            using (var deltaBrush  = new SolidBrush(_lastWeekDeltaColor))
             {
-                g.DrawString(_weeklyTargetText, _fontWeeklyTarget, targetBrush, x, y);
-                y += TextRenderer.MeasureText(_weeklyTargetText, _fontWeeklyTarget).Height - 1;
+                int h1 = TextRenderer.MeasureText(_weeklyTargetText,  _fontWeeklyTarget).Height;
+                int h2 = TextRenderer.MeasureText(_lastWeekTitleText, _fontLastWeekComparison).Height;
+                int h3 = TextRenderer.MeasureText(_lastWeekDeltaText, _fontLastWeekComparison).Height;
 
-                g.DrawString(_lastWeekTitleText, _fontLastWeekComparison, grayBrush, x, y);
-                y += TextRenderer.MeasureText(_lastWeekTitleText, _fontLastWeekComparison).Height - 2;
-
-                g.DrawString(_lastWeekDeltaText, _fontLastWeekComparison, deltaBrush, x, y);
+                g.DrawString(_weeklyTargetText,  _fontWeeklyTarget,      targetBrush, new RectangleF(x, y,      w, h1 + 4), sf);
+                y += h1 + 2;
+                g.DrawString(_lastWeekTitleText, _fontLastWeekComparison, grayBrush,  new RectangleF(x, y,      w, h2 + 4), sf);
+                y += h2 + 2;
+                g.DrawString(_lastWeekDeltaText, _fontLastWeekComparison, deltaBrush, new RectangleF(x, y,      w, h3 + 4), sf);
             }
         }
         private async Task LoadWeeklyDataAsync()
@@ -1735,7 +1769,8 @@ namespace OutlookAddIn1
         private void AddMeetingSection(string title, List<MeetingRecord> meetings, bool isSubmitted = false)
         {
             var flowPanel = isSubmitted ? flowSubmitted : flowUnsubmitted;
-            int w = flowPanel.ClientSize.Width - flowPanel.Padding.Horizontal;
+            // Reserve scrollbar width so cards are never clipped when the bar shows on hover
+            int w = flowPanel.ClientSize.Width - flowPanel.Padding.Horizontal - SystemInformation.VerticalScrollBarWidth;
 
             // ── shared constants (match unsubmitted exactly) ──────────────────
             const int subjectY    = 5;

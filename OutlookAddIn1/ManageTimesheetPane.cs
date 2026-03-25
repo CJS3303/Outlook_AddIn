@@ -24,8 +24,23 @@ namespace OutlookAddIn1
         private Button btnPrevWeek;
         private Button btnNextWeek;
         private Button btnRefresh;
-        private Label lblWeeklyTarget;
-        private Label lblLastWeekComparison;
+        private Panel pnlSummary;
+
+        // Dashboard fonts
+        private Font _fontTitle;
+        private Font _fontWeekRange;
+        private Font _fontTotalHours;
+        private Font _fontHoursLabel;
+        private Font _fontWeeklyTarget;
+        private Font _fontLastWeekComparison;
+
+        // Dashboard summary state
+        private string _weeklyTargetText = "Target: 0.0% of 32.5 hours";
+        private Color _weeklyTargetColor = Color.Gray;
+
+        private string _lastWeekTitleText = "Last week: 0.0 hrs";
+        private string _lastWeekDeltaText = "▲ 0.0 hours more";
+        private Color _lastWeekDeltaColor = Color.FromArgb(0, 150, 0);
 
         // Tab control
         private TabControl tabControl;
@@ -43,12 +58,6 @@ namespace OutlookAddIn1
         private Button btnRefreshUnsubmitted;
 
         // Font fields
-        private Font _fontTitle;
-        private Font _fontWeekRange;
-        private Font _fontTotalHours;
-        private Font _fontHoursLabel;
-        private Font _fontWeeklyTarget;
-        private Font _fontLastWeekComparison;
         private Font _fontUnsubmittedTitle;
         private Font _fontSectionHeader;
         private Font _fontSubject;
@@ -149,7 +158,12 @@ namespace OutlookAddIn1
                 TextAlign = ContentAlignment.MiddleLeft
             };
 
-            btnPrevWeek = new Button { Text = "◀", Location = new Point(15, 50), Size = new Size(30, 25) };
+            btnPrevWeek = new Button
+            {
+                Text = "◀",
+                Location = new Point(15, 50),
+                Size = new Size(30, 25)
+            };
             btnPrevWeek.Click += BtnPrevWeek_Click;
 
             lblWeekRange = new Label
@@ -161,10 +175,20 @@ namespace OutlookAddIn1
                 TextAlign = ContentAlignment.MiddleCenter
             };
 
-            btnNextWeek = new Button { Text = "▶", Location = new Point(275, 50), Size = new Size(30, 25) };
+            btnNextWeek = new Button
+            {
+                Text = "▶",
+                Location = new Point(275, 50),
+                Size = new Size(30, 25)
+            };
             btnNextWeek.Click += BtnNextWeek_Click;
 
-            btnRefresh = new Button { Text = "↻", Location = new Point(310, 50), Size = new Size(30, 25) };
+            btnRefresh = new Button
+            {
+                Text = "↻",
+                Location = new Point(310, 50),
+                Size = new Size(30, 25)
+            };
             btnRefresh.Click += BtnRefresh_Click;
 
             pnlChart = new Panel
@@ -195,35 +219,22 @@ namespace OutlookAddIn1
                 ForeColor = Color.Gray
             };
 
-            lblWeeklyTarget = new Label
+            pnlSummary = new Panel
             {
-                Text = "Target: 0.0% of 32.5 hours",
-                Font = _fontWeeklyTarget,
                 Location = new Point(15, 350),
-                Size = new Size(310, 18),
-                TextAlign = ContentAlignment.TopLeft,
-                ForeColor = Color.Gray
+                Size = new Size(310, 60),
+                BackColor = Color.Transparent
             };
-
-            lblLastWeekComparison = new Label
-            {
-                Text = "Last week: 0.0 hrs\n▲ 0.0 hours more",
-                Font = _fontLastWeekComparison,
-                Location = new Point(15, 370),
-                Size = new Size(310, 40),
-                TextAlign = ContentAlignment.TopLeft,
-                ForeColor = Color.Gray
-            };
+            pnlSummary.Paint += PnlSummary_Paint;
 
             tabDashboard.Controls.AddRange(new Control[]
             {
-                lblTitle, btnPrevWeek, lblWeekRange, btnNextWeek, btnRefresh,
-                pnlChart, lblTotalHours, lblHoursLabel,
-                lblWeeklyTarget, lblLastWeekComparison
+        lblTitle, btnPrevWeek, lblWeekRange, btnNextWeek, btnRefresh,
+        pnlChart, lblTotalHours, lblHoursLabel,
+        pnlSummary
             });
         }
 
-        // ✅ Event handler methods for dashboard buttons
         private async void BtnPrevWeek_Click(object sender, EventArgs e)
         {
             _currentWeekStart = _currentWeekStart.AddDays(-7);
@@ -1172,6 +1183,28 @@ namespace OutlookAddIn1
             int diff = (7 + (date.DayOfWeek - DayOfWeek.Monday)) % 7;
             return date.AddDays(-1 * diff).Date;
         }
+
+        private void PnlSummary_Paint(object sender, PaintEventArgs e)
+        {
+            var g = e.Graphics;
+            g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.ClearTypeGridFit;
+
+            int x = 0;
+            int y = 0;
+
+            using (var targetBrush = new SolidBrush(_weeklyTargetColor))
+            using (var grayBrush = new SolidBrush(Color.Gray))
+            using (var deltaBrush = new SolidBrush(_lastWeekDeltaColor))
+            {
+                g.DrawString(_weeklyTargetText, _fontWeeklyTarget, targetBrush, x, y);
+                y += TextRenderer.MeasureText(_weeklyTargetText, _fontWeeklyTarget).Height - 1;
+
+                g.DrawString(_lastWeekTitleText, _fontLastWeekComparison, grayBrush, x, y);
+                y += TextRenderer.MeasureText(_lastWeekTitleText, _fontLastWeekComparison).Height - 2;
+
+                g.DrawString(_lastWeekDeltaText, _fontLastWeekComparison, deltaBrush, x, y);
+            }
+        }
         private async Task LoadWeeklyDataAsync()
         {
             try
@@ -1267,8 +1300,8 @@ namespace OutlookAddIn1
                 double weekDifference = totalHours - _lastWeekTotal;
 
                 string weekComparison = weekDifference >= 0
-                    ? $"▲ {Math.Abs(weekDifference):F1} hours more"
-                    : $"▼ {Math.Abs(weekDifference):F1} hours less";
+                    ? $"▲ {Math.Abs(weekDifference):F1} hours more than last week"
+                    : $"▼ {Math.Abs(weekDifference):F1} hours less than last week";
 
                 Color comparisonColor = weekDifference >= 0
                     ? Color.FromArgb(0, 150, 0)
@@ -1278,15 +1311,17 @@ namespace OutlookAddIn1
                 this.Invoke((MethodInvoker)delegate
                 {
                     lblTotalHours.Text = totalHours.ToString("F1");
-                    lblWeeklyTarget.Text = $"Target: {targetPercentage:F1}% of {targetHours} hours";
-                    lblWeeklyTarget.ForeColor = targetPercentage >= 100
+
+                    _weeklyTargetText = $"Target: {targetPercentage:F1}% of {targetHours} hours";
+                    _weeklyTargetColor = targetPercentage >= 100
                         ? Color.FromArgb(0, 150, 0)
                         : Color.FromArgb(100, 100, 100);
 
-                    lblLastWeekComparison.Text = $"Last week: {_lastWeekTotal:F1} hrs\n{weekComparison}";
-                    lblLastWeekComparison.ForeColor = comparisonColor;
+                    _lastWeekTitleText = $"Last week: {_lastWeekTotal:F1} hrs";
+                    _lastWeekDeltaText = weekComparison;
+                    _lastWeekDeltaColor = comparisonColor;
 
-                    // ✅ IMPORTANT: Invalidate chart to trigger Paint on UI thread
+                    pnlSummary.Invalidate();
                     pnlChart.Invalidate();
                 });
             }
@@ -2027,6 +2062,7 @@ namespace OutlookAddIn1
                     return stageData.StageCode;
                 return selectedItem?.ToString() ?? string.Empty;
             }
+
 
             private async Task LoadActivitiesFromSqlAsync(string initActivity)
             {

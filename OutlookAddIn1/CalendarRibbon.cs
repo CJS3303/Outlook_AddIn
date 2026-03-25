@@ -386,10 +386,18 @@ namespace OutlookAddIn1
                         }
 
                         // Update UserProperties ONLY - DON'T modify body
-                        var ups = appt.UserProperties;
-                        AddOrSetTextProp(ups, "ProgramCode", programCode);
-                        AddOrSetTextProp(ups, "ActivityCode", activityCode);
-                        AddOrSetTextProp(ups, "StageCode", stageCode);
+                        Outlook.UserProperties ups = null;
+                        try
+                        {
+                            ups = appt.UserProperties;
+                            AddOrSetTextProp(ups, "ProgramCode", programCode);
+                            AddOrSetTextProp(ups, "ActivityCode", activityCode);
+                            AddOrSetTextProp(ups, "StageCode", stageCode);
+                        }
+                        finally
+                        {
+                            if (ups != null) Marshal.ReleaseComObject(ups);
+                        }
 
                         var apptForRecipients = appt;
 
@@ -682,14 +690,28 @@ namespace OutlookAddIn1
                     }
 
                     // ✅ CRITICAL FIX: Remove metadata to prevent ItemChange from re-inserting
-                    var ups = appt.UserProperties;
-                    var programCodeProp = ups.Find("ProgramCode");
-                    var activityCodeProp = ups.Find("ActivityCode");
-                    var stageCodeProp = ups.Find("StageCode");
+                    Outlook.UserProperties ups = null;
+                    Outlook.UserProperty programCodeProp = null;
+                    Outlook.UserProperty activityCodeProp = null;
+                    Outlook.UserProperty stageCodeProp = null;
+                    try
+                    {
+                        ups = appt.UserProperties;
+                        programCodeProp = ups.Find("ProgramCode");
+                        activityCodeProp = ups.Find("ActivityCode");
+                        stageCodeProp = ups.Find("StageCode");
 
-                    if (programCodeProp != null) programCodeProp.Delete();
-                    if (activityCodeProp != null) activityCodeProp.Delete();
-                    if (stageCodeProp != null) stageCodeProp.Delete();
+                        if (programCodeProp != null) programCodeProp.Delete();
+                        if (activityCodeProp != null) activityCodeProp.Delete();
+                        if (stageCodeProp != null) stageCodeProp.Delete();
+                    }
+                    finally
+                    {
+                        if (stageCodeProp   != null) Marshal.ReleaseComObject(stageCodeProp);
+                        if (activityCodeProp != null) Marshal.ReleaseComObject(activityCodeProp);
+                        if (programCodeProp  != null) Marshal.ReleaseComObject(programCodeProp);
+                        if (ups             != null) Marshal.ReleaseComObject(ups);
+                    }
 
                     System.Diagnostics.Debug.WriteLine("OnCancelTimesheet: Removed metadata properties to prevent re-insertion");
 
@@ -736,19 +758,34 @@ namespace OutlookAddIn1
 
         private static string GetUP(Outlook.AppointmentItem appt, string name)
         {
+            Outlook.UserProperties ups = null;
+            Outlook.UserProperty up = null;
             try
             {
-                var ups = appt.UserProperties;
-                var up = (ups != null) ? ups.Find(name) : null;
+                ups = appt.UserProperties;
+                up = (ups != null) ? ups.Find(name) : null;
                 return (up != null && up.Value != null) ? up.Value.ToString() : string.Empty;
             }
             catch { return string.Empty; }
+            finally
+            {
+                if (up  != null) Marshal.ReleaseComObject(up);
+                if (ups != null) Marshal.ReleaseComObject(ups);
+            }
         }
 
         private static void AddOrSetTextProp(Outlook.UserProperties ups, string name, string value)
         {
-            var up = ups.Find(name) ?? ups.Add(name, Outlook.OlUserPropertyType.olText, false, Type.Missing);
-            up.Value = value ?? string.Empty;
+            Outlook.UserProperty up = null;
+            try
+            {
+                up = ups.Find(name) ?? ups.Add(name, Outlook.OlUserPropertyType.olText, false, Type.Missing);
+                up.Value = value ?? string.Empty;
+            }
+            finally
+            {
+                if (up != null) Marshal.ReleaseComObject(up);
+            }
         }
 
         // Helper method to safely get GlobalAppointmentID

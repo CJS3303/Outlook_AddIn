@@ -62,6 +62,7 @@ namespace OutlookAddIn1
         private Font _fontSectionHeader;
         private Font _fontSubject;
         private Font _fontTime;
+        private Font _fontLabel;
         private Font _fontButton;
         private Font _fontButtonBold;
 
@@ -110,6 +111,37 @@ namespace OutlookAddIn1
             _currentWeekStart = GetMondayOfCurrentWeek(DateTime.Now);
             _dailyHours = new double[7];
             _dayLabels = new[] { "Mo", "Tu", "We", "Th", "Fr", "Sa", "Su" };
+        }
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing && !_isDisposed)
+            {
+                _isDisposed = true;
+                _fontTitle?.Dispose();
+                _fontWeekRange?.Dispose();
+                _fontTotalHours?.Dispose();
+                _fontHoursLabel?.Dispose();
+                _fontWeeklyTarget?.Dispose();
+                _fontLastWeekComparison?.Dispose();
+                _fontSubmittedTitle?.Dispose();
+                _fontUnsubmittedTitle?.Dispose();
+                _fontSectionHeader?.Dispose();
+                _fontSubject?.Dispose();
+                _fontTime?.Dispose();
+                _fontLabel?.Dispose();
+                _fontButton?.Dispose();
+                _fontButtonBold?.Dispose();
+            }
+            base.Dispose(disposing);
+        }
+
+        private void DisposeAndClearControls(Control.ControlCollection controls)
+        {
+            var list = new Control[controls.Count];
+            controls.CopyTo(list, 0);
+            controls.Clear();
+            foreach (var c in list) c.Dispose();
         }
 
         protected override void OnVisibleChanged(EventArgs e)
@@ -282,6 +314,12 @@ namespace OutlookAddIn1
         private void InitializeSubmittedTab()
         {
             _fontSubmittedTitle = new Font("Segoe UI", 14, FontStyle.Bold);
+            _fontSectionHeader  = new Font("Segoe UI", 11, FontStyle.Bold);
+            _fontSubject        = new Font("Segoe UI", 9,  FontStyle.Bold);
+            _fontTime           = new Font("Segoe UI", 8);
+            _fontLabel          = new Font("Segoe UI", 10);
+            _fontButton         = new Font("Segoe UI", 8);
+            _fontButtonBold     = new Font("Segoe UI", 8,  FontStyle.Bold);
 
             // Top bar: title + refresh button at fixed height
             var topSubmitted = new Panel { Dock = DockStyle.Top, Height = 45 };
@@ -375,11 +413,11 @@ namespace OutlookAddIn1
             {
                 flowSubmitted.Invoke((MethodInvoker)delegate
                 {
-                    flowSubmitted.Controls.Clear();
+                    DisposeAndClearControls(flowSubmitted.Controls);
                     flowSubmitted.Controls.Add(new Label
                     {
                         Text = "Loading submitted events...",
-                        Font = new Font("Segoe UI", 10),
+                        Font = _fontLabel,
                         Width = flowSubmitted.Width - 20,
                         Height = 30,
                         ForeColor = Color.Gray
@@ -497,14 +535,14 @@ namespace OutlookAddIn1
 
                 flowSubmitted.Invoke((MethodInvoker)delegate
                 {
-                    flowSubmitted.Controls.Clear();
+                    DisposeAndClearControls(flowSubmitted.Controls);
 
                     if (allItems.Count == 0)
                     {
                         flowSubmitted.Controls.Add(new Label
                         {
                             Text = "No submitted or ignored events found.",
-                            Font = new Font("Segoe UI", 10),
+                            Font = _fontLabel,
                             Size = new Size(flowSubmitted.Width - 25, 40),
                             ForeColor = Color.Gray
                         });
@@ -522,11 +560,11 @@ namespace OutlookAddIn1
             {
                 flowSubmitted.Invoke((MethodInvoker)delegate
                 {
-                    flowSubmitted.Controls.Clear();
+                    DisposeAndClearControls(flowSubmitted.Controls);
                     flowSubmitted.Controls.Add(new Label
                     {
                         Text = $"Error: {ex.Message}",
-                        Font = new Font("Segoe UI", 10),
+                        Font = _fontLabel,
                         Width = flowSubmitted.Width - 20,
                         Height = 60,
                         ForeColor = Color.Red
@@ -564,7 +602,7 @@ namespace OutlookAddIn1
             flowSubmitted.Controls.Add(new Label
             {
                 Text      = $"{title} ({items.Count})",
-                Font      = new Font("Segoe UI", 11, FontStyle.Bold),
+                Font      = _fontSectionHeader,
                 Size      = new Size(w, 30),
                 Margin    = new Padding(0, 5, 0, 0),
                 ForeColor = Color.FromArgb(0, 120, 212),
@@ -588,7 +626,7 @@ namespace OutlookAddIn1
                 p.Controls.Add(new Label
                 {
                     Text         = first.Subject,
-                    Font         = new Font("Segoe UI", 9, FontStyle.Bold),
+                    Font         = _fontSubject,
                     Location     = new Point(5, subjectY),
                     Size         = new Size(w - 15, subjectH),
                     AutoEllipsis = true
@@ -598,7 +636,7 @@ namespace OutlookAddIn1
                 p.Controls.Add(new Label
                 {
                     Text      = $"{first.StartTorontoTime:MMM dd, HH:mm} ({(first.EndUtc - first.StartUtc).TotalHours:F1} hrs)",
-                    Font      = new Font("Segoe UI", 8),
+                    Font      = _fontTime,
                     Location  = new Point(5, timeY),
                     Size      = new Size(w - 15, timeH),
                     ForeColor = Color.FromArgb(100, 100, 100)
@@ -616,7 +654,7 @@ namespace OutlookAddIn1
                         BackColor = Color.FromArgb(220, 220, 220),
                         ForeColor = Color.FromArgb(60, 60, 60),
                         FlatStyle = FlatStyle.Flat,
-                        Font      = new Font("Segoe UI", 8)
+                        Font      = _fontButton
                     };
                     btnUnignore.FlatAppearance.BorderSize = 0;
                     var capturedItem = item;
@@ -634,7 +672,7 @@ namespace OutlookAddIn1
                         BackColor = Color.FromArgb(220, 100, 100),
                         ForeColor = Color.White,
                         FlatStyle = FlatStyle.Flat,
-                        Font      = new Font("Segoe UI", 8, FontStyle.Bold)
+                        Font      = _fontButtonBold
                     };
                     btnCancel.FlatAppearance.BorderSize = 0;
                     var recordsToCancel = item.Records;
@@ -1345,11 +1383,11 @@ namespace OutlookAddIn1
         {
             this.Invoke((MethodInvoker)delegate
             {
-                flowUnsubmitted.Controls.Clear();
+                DisposeAndClearControls(flowUnsubmitted.Controls);
                 flowUnsubmitted.Controls.Add(new Label
                 {
                     Text = message,
-                    Font = new Font("Segoe UI", 10),
+                    Font = _fontLabel,
                     Width = flowUnsubmitted.Width - 20,
                     Height = 30,
                     ForeColor = Color.Gray
@@ -1361,11 +1399,11 @@ namespace OutlookAddIn1
         {
             this.Invoke((MethodInvoker)delegate
             {
-                flowUnsubmitted.Controls.Clear();
+                DisposeAndClearControls(flowUnsubmitted.Controls);
                 flowUnsubmitted.Controls.Add(new Label
                 {
                     Text = message,
-                    Font = new Font("Segoe UI", 10),
+                    Font = _fontLabel,
                     Width = flowUnsubmitted.Width - 20,
                     Height = 60,
                     ForeColor = Color.Red
@@ -1690,14 +1728,14 @@ namespace OutlookAddIn1
                 {
                     try
                     {
-                        flowUnsubmitted.Controls.Clear();
+                        DisposeAndClearControls(flowUnsubmitted.Controls);
 
                         if (unsubmittedMeetings.Count == 0)
                         {
                             flowUnsubmitted.Controls.Add(new Label
                             {
                                 Text = "No unsubmitted events found.",
-                                Font = new Font("Segoe UI", 10),
+                                Font = _fontLabel,
                                 Size = new Size(flowUnsubmitted.Width - 25, 40),
                                 ForeColor = Color.Green,
                                 Padding = new Padding(0, 10, 0, 0)
@@ -1764,7 +1802,7 @@ namespace OutlookAddIn1
             flowPanel.Controls.Add(new Label
             {
                 Text      = $"{title} ({meetings.Count})",
-                Font      = new Font("Segoe UI", 11, FontStyle.Bold),
+                Font      = _fontSectionHeader,
                 Size      = new Size(w, 30),
                 Margin    = new Padding(0, 5, 0, 0),
                 ForeColor = headerColor,
@@ -1785,7 +1823,7 @@ namespace OutlookAddIn1
                 p.Controls.Add(new Label
                 {
                     Text        = m.Subject,
-                    Font        = new Font("Segoe UI", 9, FontStyle.Bold),
+                    Font        = _fontSubject,
                     Location    = new Point(5, subjectY),
                     Size        = new Size(w - 15, subjectH),
                     AutoEllipsis = true
@@ -1795,7 +1833,7 @@ namespace OutlookAddIn1
                 p.Controls.Add(new Label
                 {
                     Text      = $"{m.StartTorontoTime:MMM dd, HH:mm} ({(m.EndUtc - m.StartUtc).TotalHours:F1} hrs)",
-                    Font      = new Font("Segoe UI", 8),
+                    Font      = _fontTime,
                     Location  = new Point(5, timeY),
                     Size      = new Size(w - 15, timeH),
                     ForeColor = Color.FromArgb(100, 100, 100)
@@ -1807,7 +1845,7 @@ namespace OutlookAddIn1
                     p.Controls.Add(new Label
                     {
                         Text         = $"Program: {m.ProgramCode} | Activity: {m.ActivityCode}",
-                        Font         = new Font("Segoe UI", 8),
+                        Font         = _fontTime,
                         Location     = new Point(5, programY),
                         Size         = new Size(w - 15, programH),
                         ForeColor    = Color.FromArgb(100, 100, 100),
@@ -1828,7 +1866,7 @@ namespace OutlookAddIn1
                         BackColor = Color.FromArgb(220, 100, 100),
                         ForeColor = Color.White,
                         FlatStyle = FlatStyle.Flat,
-                        Font      = new Font("Segoe UI", 8, FontStyle.Bold)
+                        Font      = _fontButtonBold
                     };
                     btnCancel.FlatAppearance.BorderSize = 0;
                     var recordsToCancel = meetings;
@@ -1842,7 +1880,7 @@ namespace OutlookAddIn1
                         BackColor = Color.FromArgb(220, 220, 220),
                         ForeColor = Color.FromArgb(60, 60, 60),
                         FlatStyle = FlatStyle.Flat,
-                        Font      = new Font("Segoe UI", 8)
+                        Font      = _fontButton
                     };
                     btnUnignore.FlatAppearance.BorderSize = 0;
                     btnUnignore.Click += async (s, e) => await CancelIgnoreSubmissionAsync(m);
@@ -1859,7 +1897,7 @@ namespace OutlookAddIn1
                         BackColor = Color.FromArgb(0, 120, 212),
                         ForeColor = Color.White,
                         FlatStyle = FlatStyle.Flat,
-                        Font      = new Font("Segoe UI", 8, FontStyle.Bold)
+                        Font      = _fontButtonBold
                     };
                     btnSubmit.FlatAppearance.BorderSize = 0;
                     btnSubmit.Click += async (s, e) => await SubmitMeetingAsync(m);
@@ -1872,7 +1910,7 @@ namespace OutlookAddIn1
                         BackColor = Color.FromArgb(220, 220, 220),
                         ForeColor = Color.FromArgb(60, 60, 60),
                         FlatStyle = FlatStyle.Flat,
-                        Font      = new Font("Segoe UI", 8)
+                        Font      = _fontButton
                     };
                     btnIgnore.FlatAppearance.BorderSize = 0;
                     btnIgnore.Click += (s, e) => IgnoreMeeting(m, p);

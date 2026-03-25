@@ -842,7 +842,7 @@ namespace OutlookAddIn1
                             _manageTimesheetPane.Width = PaneFixedWidth;
                     };
 
-                    _manageTimesheetPane.SizeChanged += (s, e) =>
+                    paneControl.Resize += (s, e) =>
                     {
                         // Restart timer on every drag tick — fires once user releases
                         _paneWidthTimer.Stop();

@@ -29,7 +29,7 @@ namespace OutlookAddIn1
         private string ExplorerTabsXml() => @"
   <tab idMso='TabCalendar'>
     <group id='grpTTIMeetings' label='TTI Specific' insertAfterMso='GroupHelp'>
-      <button id='btnManageTimesheet' label='Manage Timesheet' onAction='OnManageTimesheet'/>
+      <button id='btnManageTimesheet' label='Manage Timesheet' size='large' getImage='GetManageTimesheetImage' onAction='OnManageTimesheet'/>
     </group>
   </tab>";
 
@@ -62,6 +62,24 @@ namespace OutlookAddIn1
 
 
         public void OnRibbonLoad(Office.IRibbonUI ribbonUI) { _ribbon = ribbonUI; }
+
+        public Bitmap GetManageTimesheetImage(Office.IRibbonControl control)
+        {
+            try
+            {
+                var asm = System.Reflection.Assembly.GetExecutingAssembly();
+                using (var stream = asm.GetManifestResourceStream("OutlookAddIn1.Resources.ManageTimesheet.png"))
+                {
+                    if (stream != null)
+                        return new Bitmap(stream);
+                }
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"GetManageTimesheetImage failed: {ex.Message}");
+            }
+            return null;
+        }
 
         public void OnManageTimesheet(Office.IRibbonControl control)
         {

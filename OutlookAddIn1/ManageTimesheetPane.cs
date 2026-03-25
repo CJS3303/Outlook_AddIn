@@ -253,7 +253,7 @@ namespace OutlookAddIn1
             {
                 Text = "Submitted",
                 Font = _fontSubmittedTitle,
-                Location = new Point(15, 8),
+                Location = new Point(10, 8),
                 Size = new Size(200, 30),
                 TextAlign = ContentAlignment.MiddleLeft
             };
@@ -277,7 +277,7 @@ namespace OutlookAddIn1
                 AutoScroll = true,
                 FlowDirection = FlowDirection.TopDown,
                 WrapContents = false,
-                Padding = new Padding(0, 0, 0, 0)
+                Padding = new Padding(10, 5, 10, 0)
             };
 
             tabSubmitted.Controls.Add(flowSubmitted);   // Fill added first
@@ -294,7 +294,7 @@ namespace OutlookAddIn1
             {
                 Text = "Unsubmitted",
                 Font = _fontUnsubmittedTitle,
-                Location = new Point(15, 8),
+                Location = new Point(10, 8),
                 Size = new Size(200, 30),
                 TextAlign = ContentAlignment.MiddleLeft
             };
@@ -322,7 +322,7 @@ namespace OutlookAddIn1
                 AutoScroll = true,
                 FlowDirection = FlowDirection.TopDown,
                 WrapContents = false,
-                Padding = new Padding(0, 0, 0, 0)
+                Padding = new Padding(10, 5, 10, 0)
             };
 
             tabUnsubmitted.Controls.Add(flowUnsubmitted);
@@ -509,7 +509,7 @@ namespace OutlookAddIn1
         // submitted tab. Submitted and ignored cards are interleaved, sorted by time.
         private void AddSubmittedTabSection(string title, List<SubmittedTabItem> items)
         {
-            int w = flowSubmitted.Width - 25;
+            int w = flowSubmitted.ClientSize.Width - flowSubmitted.Padding.Horizontal;
 
             // ── shared layout constants (identical to unsubmitted cards) ──────
             const int subjectY  = 5;
@@ -528,6 +528,7 @@ namespace OutlookAddIn1
                 Text      = $"{title} ({items.Count})",
                 Font      = new Font("Segoe UI", 11, FontStyle.Bold),
                 Size      = new Size(w, 30),
+                Margin    = new Padding(0, 5, 0, 0),
                 ForeColor = Color.FromArgb(0, 120, 212),
                 TextAlign = ContentAlignment.MiddleLeft
             });
@@ -1699,7 +1700,7 @@ namespace OutlookAddIn1
         private void AddMeetingSection(string title, List<MeetingRecord> meetings, bool isSubmitted = false)
         {
             var flowPanel = isSubmitted ? flowSubmitted : flowUnsubmitted;
-            int w = flowPanel.Width - 25;
+            int w = flowPanel.ClientSize.Width - flowPanel.Padding.Horizontal;
 
             // ── shared constants (match unsubmitted exactly) ──────────────────
             const int subjectY    = 5;
@@ -1726,6 +1727,7 @@ namespace OutlookAddIn1
                 Text      = $"{title} ({meetings.Count})",
                 Font      = new Font("Segoe UI", 11, FontStyle.Bold),
                 Size      = new Size(w, 30),
+                Margin    = new Padding(0, 5, 0, 0),
                 ForeColor = headerColor,
                 TextAlign = ContentAlignment.MiddleLeft
             });
@@ -1736,7 +1738,7 @@ namespace OutlookAddIn1
                 {
                     Size        = new Size(w, panelHeight),
                     BorderStyle = BorderStyle.FixedSingle,
-                    BackColor   = Color.FromArgb(250, 250, 250),   // same as unsubmitted
+                    BackColor   = Color.FromArgb(250, 250, 250),
                     Margin      = new Padding(0, 0, 0, 6)
                 };
 

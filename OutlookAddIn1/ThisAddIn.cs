@@ -828,15 +828,12 @@ namespace OutlookAddIn1
 
                 _manageTimesheetPane.Visible = true;
 
-                // First open: HandleCreated event inside ManageTimesheetPane fires once the
-                // window handle exists and triggers LoadDataAsync() — no call needed here.
-                // Re-opens: HandleCreated already fired and unsubscribed, so we trigger here.
-                if (!isNewPane)
-                {
-                    var ctrl = _manageTimesheetPane.Control as ManageTimesheetPane;
-                    if (ctrl != null)
-                        _ = ctrl.LoadDataAsync();
-                }
+                // Load data AFTER Visible = true — at this point the control is fully
+                // hosted inside the VSTO CustomTaskPane and its window handle exists,
+                // so all Invoke calls inside LoadDataAsync are safe.
+                var ctrl = _manageTimesheetPane.Control as ManageTimesheetPane;
+                if (ctrl != null)
+                    _ = ctrl.LoadDataAsync();
             }
             catch (Exception ex)
             {

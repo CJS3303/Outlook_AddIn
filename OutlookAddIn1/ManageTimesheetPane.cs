@@ -114,17 +114,6 @@ namespace OutlookAddIn1
             _dailyHours = new double[7];
             _dayLabels = new[] { "Mo", "Tu", "We", "Th", "Fr", "Sa", "Su" };
 
-            // Trigger initial data load the moment the window handle is created.
-            // At this point ALL child control handles exist, so Invoke never throws.
-            // This replaces the OnVisibleChanged approach which fired before the handle
-            // was ready and caused Invoke to throw + silently swallow the entire load.
-            this.HandleCreated += OnHandleReady;
-        }
-
-        private async void OnHandleReady(object sender, EventArgs e)
-        {
-            this.HandleCreated -= OnHandleReady; // fire exactly once
-            await LoadDataAsync();
         }
 
         protected override void Dispose(bool disposing)
@@ -744,7 +733,8 @@ namespace OutlookAddIn1
 
                 if (deletedCount > 0)
                 {
-                    System.Diagnostics.Debug.WriteLine($"CancelSubmissionAsync: Deletion complete, reloading submitted meetings");
+                    System.Diagnostics.Debug.WriteLine($"CancelSubmissionAsync: Deletion complete, removing category and reloading");
+                    RemoveTimesheetCategoryFromAppointment(firstMeeting.EntryId);
                     MessageBox.Show(
                         meetings.Count > 1
                             ? $"Deleted {deletedCount} program record(s) for this meeting."
@@ -792,7 +782,8 @@ namespace OutlookAddIn1
                 System.Diagnostics.Debug.WriteLine($"CancelIgnoreSubmissionAsync: Calling DbWriter.CancelIgnoreTimesheetAsync");
                 if (await DbWriter.CancelIgnoreTimesheetAsync(tempRec))
                 {
-                    System.Diagnostics.Debug.WriteLine("CancelIgnoreSubmissionAsync: Successfully un-ignored, reloading");
+                    System.Diagnostics.Debug.WriteLine("CancelIgnoreSubmissionAsync: Successfully un-ignored, removing category and reloading");
+                    RemoveTimesheetCategoryFromAppointment(meeting.EntryId);
                     MessageBox.Show("Ignore status removed!", "Un-Ignored");
                     await LoadSubmittedMeetingsAsync();
                     await LoadUnsubmittedMeetingsAsync();
@@ -1202,6 +1193,59 @@ namespace OutlookAddIn1
                     System.Runtime.InteropServices.Marshal.ReleaseComObject(session);
                     session = null;
                 }
+            }
+        }
+
+        /// <summary>
+        /// Finds the Outlook appointment by EntryId and strips all timesheet-related
+        /// categories ("Timesheet Submitted", "Timesheet Ignored").
+        /// Safe to call even when the appointment no longer exists in the calendar.
+        /// </summary>
+        private void RemoveTimesheetCategoryFromAppointment(string entryId)
+        {
+            Outlook.NameSpace ns = null;
+            Outlook.AppointmentItem appt = null;
+            try
+            {
+                ns = Globals.ThisAddIn.Application.Session;
+                appt = ns.GetItemFromID(entryId) as Outlook.AppointmentItem;
+
+                if (appt == null)
+                {
+                    System.Diagnostics.Debug.WriteLine("RemoveTimesheetCategory: Appointment not found for EntryId");
+                    return;
+                }
+
+                if (appt.RecurrenceState == Outlook.OlRecurrenceState.olApptOccurrence)
+                {
+                    System.Diagnostics.Debug.WriteLine($"RemoveTimesheetCategory: Skipping recurring occurrence: {appt.Subject}");
+                    return;
+                }
+
+                if (string.IsNullOrEmpty(appt.Categories))
+                    return;
+
+                var remaining = appt.Categories
+                    .Split(new[] { ',', ';' }, StringSplitOptions.RemoveEmptyEntries)
+                    .Select(c => c.Trim())
+                    .Where(c => !c.Equals("Timesheet Submitted", StringComparison.OrdinalIgnoreCase) &&
+                                !c.Equals("Timesheet Ignored", StringComparison.OrdinalIgnoreCase) &&
+                                !c.Equals("Multi-Program Timesheet Submitted", StringComparison.OrdinalIgnoreCase))
+                    .ToList();
+
+                appt.Categories = remaining.Count > 0 ? string.Join(", ", remaining) : null;
+                appt.Save();
+                System.Diagnostics.Debug.WriteLine($"RemoveTimesheetCategory: Categories now '{appt.Categories}'");
+            }
+            catch (Exception ex)
+            {
+                // Appointment may have been deleted from calendar — not critical
+                System.Diagnostics.Debug.WriteLine($"RemoveTimesheetCategory failed: {ex.Message}");
+            }
+            finally
+            {
+                if (appt != null) Marshal.ReleaseComObject(appt);
+                if (ns != null) Marshal.ReleaseComObject(ns);
             }
         }
 

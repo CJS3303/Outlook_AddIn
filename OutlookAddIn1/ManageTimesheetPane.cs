@@ -175,13 +175,20 @@ namespace OutlookAddIn1
 
         public async Task LoadDataAsync()
         {
-            // Each tab loads independently — a failure in one never blocks the others.
-            try { await LoadWeeklyDataAsync(); }
+            // Dashboard + Submitted are pure SQL — run them concurrently.
+            // Both start synchronously on the UI thread (Invoke for "Loading…" labels),
+            // then yield at cn.OpenAsync().ConfigureAwait(false), so the SQL work overlaps.
+            var weeklyTask = LoadWeeklyDataAsync();
+            var submittedTask = LoadSubmittedMeetingsAsync();
+
+            try { await weeklyTask; }
             catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"LoadWeeklyDataAsync failed: {ex.Message}"); }
 
-            try { await LoadSubmittedMeetingsAsync(); }
+            try { await submittedTask; }
             catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"LoadSubmittedMeetingsAsync failed: {ex.Message}"); }
 
+            // Unsubmitted accesses Outlook COM (STA) after its SQL — must run on
+            // the UI thread, so it starts after the parallel SQL pair finishes.
             try { await LoadUnsubmittedMeetingsAsync(); }
             catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"LoadUnsubmittedMeetingsAsync failed: {ex.Message}"); }
         }
@@ -1640,128 +1647,100 @@ namespace OutlookAddIn1
                 }
             }
 
-            System.Diagnostics.Debug.WriteLine($"Found {submittedOrIgnoredKeys.Count} already submitted/ignored keys in database");
+            // ── Outlook COM loop ──────────────────────────────────────────
+            // Runs directly on the UI (STA) thread — NO Task.Run.
+            // Outlook COM objects are STA-bound; calling from an MTA thread
+            // forces cross-apartment marshaling (~1-2 ms per property access
+            // × 7 properties × 200 items ≈ 1.4 s of pure overhead).
+            // Running on STA avoids all marshaling; the loop takes ~100-200 ms.
+            Microsoft.Office.Interop.Outlook.NameSpace ns = null;
+            Microsoft.Office.Interop.Outlook.MAPIFolder calFolder = null;
+            Microsoft.Office.Interop.Outlook.Items items = null;
+            Microsoft.Office.Interop.Outlook.Items filteredItems = null;
 
-            await Task.Run(() =>
+            try
             {
-                Microsoft.Office.Interop.Outlook.Application app = null;
-                Microsoft.Office.Interop.Outlook.NameSpace ns = null;
-                Microsoft.Office.Interop.Outlook.MAPIFolder calFolder = null;
-                Microsoft.Office.Interop.Outlook.Items items = null;
-                Microsoft.Office.Interop.Outlook.Items filteredItems = null;
+                ns = Globals.ThisAddIn.Application.Session;
+                calFolder = ns.GetDefaultFolder(Outlook.OlDefaultFolders.olFolderCalendar);
+                items = calFolder.Items;
+                items.Sort("[Start]", false);
+                items.IncludeRecurrences = true;
 
-                try
+                var startDate = DateTime.Today.AddDays(-7);
+                var endDate = DateTime.Today.AddDays(1);
+                var filter = $"[Start] >= '{startDate:g}' AND [Start] <= '{endDate:g}'";
+                filteredItems = items.Restrict(filter);
+
+                // Use GetFirst/GetNext — avoids .Count which forces Outlook to
+                // enumerate ALL expanded recurrences upfront (very expensive).
+                object rawItem = filteredItems.GetFirst();
+                int count = 0;
+                while (rawItem != null && count < 200)
                 {
-                    app = Globals.ThisAddIn.Application;
-                    ns = app.Session;
-                    calFolder = ns.GetDefaultFolder(Microsoft.Office.Interop.Outlook.OlDefaultFolders.olFolderCalendar);
-                    items = calFolder.Items;
-                    items.Sort("[Start]", false);
-                    items.IncludeRecurrences = true;
-
-                    // Use Today (midnight) not Now so morning meetings 7 days ago aren't cut off
-                    var startDate = DateTime.Today.AddDays(-7);
-                    var endDate = DateTime.Today.AddDays(1);
-                    var filter = $"[Start] >= '{startDate:g}' AND [Start] <= '{endDate:g}'";
-                    filteredItems = items.Restrict(filter);
-
-                    int maxItems = Math.Min(filteredItems.Count, 200);
-
-                    for (int i = 1; i <= maxItems; i++)
+                    var appt = rawItem as Outlook.AppointmentItem;
+                    if (appt != null)
                     {
-                        Microsoft.Office.Interop.Outlook.AppointmentItem appt = null;
                         try
                         {
-                            appt = filteredItems[i] as Microsoft.Office.Interop.Outlook.AppointmentItem;
-                            if (appt == null) continue;
-
-                            // Grab both IDs — GlobalAppointmentID can throw for some items
-                            string globalAppointmentId = "";
-                            try { globalAppointmentId = appt.GlobalAppointmentID ?? ""; } catch { }
-                            string entryId = appt.EntryID ?? "";
-
-                            // Use GlobalAppointmentID when available, else EntryID
-                            string globalId = !string.IsNullOrWhiteSpace(globalAppointmentId)
-                                ? globalAppointmentId : entryId;
-
-                            var apptStartUtc = appt.StartUTC;
                             var recurrenceState = appt.RecurrenceState;
-
-                            if (recurrenceState == Microsoft.Office.Interop.Outlook.OlRecurrenceState.olApptMaster)
+                            if (recurrenceState != Outlook.OlRecurrenceState.olApptMaster)
                             {
-                                System.Diagnostics.Debug.WriteLine($"⏭️ SKIPPING master appointment: {appt.Subject ?? "(no subject)"}");
-                                continue;
+                                string globalAppointmentId = "";
+                                try { globalAppointmentId = appt.GlobalAppointmentID ?? ""; } catch { }
+                                string entryId = appt.EntryID ?? "";
+                                string globalId = !string.IsNullOrWhiteSpace(globalAppointmentId)
+                                    ? globalAppointmentId : entryId;
+
+                                if (!string.IsNullOrWhiteSpace(globalId))
+                                {
+                                    var apptStartUtc = appt.StartUTC;
+                                    var dateStr = TimeZoneInfo.ConvertTimeFromUtc(apptStartUtc, TorontoTz).ToString("yyyy-MM-dd");
+
+                                    bool alreadyProcessed =
+                                        (!string.IsNullOrWhiteSpace(globalAppointmentId) &&
+                                         submittedOrIgnoredKeys.Contains($"{globalAppointmentId}|{dateStr}")) ||
+                                        (!string.IsNullOrWhiteSpace(entryId) &&
+                                         submittedOrIgnoredKeys.Contains($"{entryId}|{dateStr}"));
+
+                                    if (!alreadyProcessed &&
+                                        appt.MeetingStatus != Outlook.OlMeetingStatus.olMeetingCanceled &&
+                                        appt.MeetingStatus != Outlook.OlMeetingStatus.olMeetingReceivedAndCanceled)
+                                    {
+                                        unsubmittedMeetings.Add(new MeetingRecord
+                                        {
+                                            EntryId = entryId,
+                                            GlobalId = globalId,
+                                            Subject = appt.Subject ?? "",
+                                            StartUtc = apptStartUtc,
+                                            EndUtc = appt.EndUTC,
+                                            UserDisplayName = email,
+                                            IsRecurringOccurrence = recurrenceState == Outlook.OlRecurrenceState.olApptOccurrence
+                                        });
+                                    }
+                                }
                             }
-
-                            // Skip if no usable identifier
-                            if (string.IsNullOrWhiteSpace(globalId))
-                                continue;
-
-                            var apptStartTorontoTime = TimeZoneInfo.ConvertTimeFromUtc(apptStartUtc, TorontoTz);
-                            var dateStr = $"{apptStartTorontoTime:yyyy-MM-dd}";
-
-                            // Check BOTH IDs against the submitted/ignored set
-                            // (DB may have stored GlobalAppointmentID or EntryID)
-                            bool alreadyProcessed =
-                                (!string.IsNullOrWhiteSpace(globalAppointmentId) &&
-                                 submittedOrIgnoredKeys.Contains($"{globalAppointmentId}|{dateStr}")) ||
-                                (!string.IsNullOrWhiteSpace(entryId) &&
-                                 submittedOrIgnoredKeys.Contains($"{entryId}|{dateStr}"));
-
-                            if (alreadyProcessed)
-                                continue;
-
-                            if (appt.MeetingStatus == Microsoft.Office.Interop.Outlook.OlMeetingStatus.olMeetingCanceled ||
-                                appt.MeetingStatus == Microsoft.Office.Interop.Outlook.OlMeetingStatus.olMeetingReceivedAndCanceled)
-                                continue;
-
-                            System.Diagnostics.Debug.WriteLine($"📅 Found unsubmitted: {appt.Subject ?? "(no subject)"}");
-
-                            unsubmittedMeetings.Add(new MeetingRecord
-                            {
-                                EntryId = appt.EntryID ?? "",
-                                GlobalId = globalId,
-                                Subject = appt.Subject ?? "",
-                                StartUtc = apptStartUtc,
-                                EndUtc = appt.EndUTC,
-                                UserDisplayName = email,
-                                IsRecurringOccurrence = recurrenceState == Microsoft.Office.Interop.Outlook.OlRecurrenceState.olApptOccurrence
-                            });
                         }
                         finally
                         {
-                            if (appt != null)
-                            {
-                                System.Runtime.InteropServices.Marshal.ReleaseComObject(appt);
-                                appt = null;
-                            }
+                            Marshal.ReleaseComObject(appt);
                         }
                     }
+                    else if (rawItem != null)
+                    {
+                        Marshal.ReleaseComObject(rawItem);
+                    }
+
+                    rawItem = filteredItems.GetNext();
+                    count++;
                 }
-                finally
-                {
-                    if (filteredItems != null)
-                    {
-                        System.Runtime.InteropServices.Marshal.ReleaseComObject(filteredItems);
-                        filteredItems = null;
-                    }
-                    if (items != null)
-                    {
-                        System.Runtime.InteropServices.Marshal.ReleaseComObject(items);
-                        items = null;
-                    }
-                    if (calFolder != null)
-                    {
-                        System.Runtime.InteropServices.Marshal.ReleaseComObject(calFolder);
-                        calFolder = null;
-                    }
-                    if (ns != null)
-                    {
-                        System.Runtime.InteropServices.Marshal.ReleaseComObject(ns);
-                        ns = null;
-                    }
-                }
-            });
+            }
+            finally
+            {
+                if (filteredItems != null) Marshal.ReleaseComObject(filteredItems);
+                if (items != null) Marshal.ReleaseComObject(items);
+                if (calFolder != null) Marshal.ReleaseComObject(calFolder);
+                if (ns != null) Marshal.ReleaseComObject(ns);
+            }
 
             return unsubmittedMeetings;
         }

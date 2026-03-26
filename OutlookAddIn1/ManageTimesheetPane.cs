@@ -2708,12 +2708,12 @@ namespace OutlookAddIn1
                 _maxHours = maxHours;
                 Allocation = new ProgramAllocation { Hours = maxHours };
 
-                Width = 450; Height = 135;
+                Width = 420; Height = 135;
                 BorderStyle = BorderStyle.FixedSingle;
                 Margin = new Padding(0, 0, 0, 8);
                 BackColor = Color.FromArgb(250, 250, 250);
 
-                cboProgram = new ComboBox { Left = 10, Top = 10, Width = 350, DropDownStyle = ComboBoxStyle.DropDownList };
+                cboProgram = new ComboBox { Left = 10, Top = 10, Width = 330, DropDownStyle = ComboBoxStyle.DropDownList };
                 cboProgram.Items.AddRange(programs.ToArray());
                 if (!string.IsNullOrWhiteSpace(initProgram))
                 {
@@ -2723,7 +2723,7 @@ namespace OutlookAddIn1
                 if (cboProgram.SelectedIndex < 0 && cboProgram.Items.Count > 0) cboProgram.SelectedIndex = 0;
                 cboProgram.SelectedIndexChanged += (s, e) => Allocation.ProgramCode = cboProgram.SelectedItem?.ToString() ?? "";
 
-                cboActivity = new ComboBox { Left = 10, Top = 40, Width = 350, DropDownStyle = ComboBoxStyle.DropDownList };
+                cboActivity = new ComboBox { Left = 10, Top = 40, Width = 330, DropDownStyle = ComboBoxStyle.DropDownList };
                 cboActivity.Items.AddRange(new object[] { "Work Time", "Client Communication", "Vendor Communication", "Internal Communication" });
                 if (!string.IsNullOrWhiteSpace(initActivity))
                 {
@@ -2733,7 +2733,7 @@ namespace OutlookAddIn1
                 if (cboActivity.SelectedIndex < 0 && cboActivity.Items.Count > 0) cboActivity.SelectedIndex = 0;
                 cboActivity.SelectedIndexChanged += (s, e) => Allocation.ActivityCode = cboActivity.SelectedItem?.ToString() ?? "";
 
-                cboStage = new ComboBox { Left = 10, Top = 70, Width = 350, DropDownStyle = ComboBoxStyle.DropDownList };
+                cboStage = new ComboBox { Left = 10, Top = 70, Width = 330, DropDownStyle = ComboBoxStyle.DropDownList };
                 cboStage.Items.AddRange(new object[] { "Client Meeting", "Internal Meeting", "Email", "Vendor Research", "Meeting", "Timesheet", "Design", "Registration" });
                 if (!string.IsNullOrWhiteSpace(initStage))
                 {
@@ -2746,7 +2746,7 @@ namespace OutlookAddIn1
                 int maxMinutes = (int)(maxHours * 60);
                 trackHours = new TrackBar
                 {
-                    Left = 10, Top = 100, Width = 300,
+                    Left = 10, Top = 100, Width = 280,
                     Minimum = 0, Maximum = maxMinutes, Value = maxMinutes,
                     TickFrequency = 15, SmallChange = 5, LargeChange = 15
                 };
@@ -2758,14 +2758,14 @@ namespace OutlookAddIn1
 
                 lblHours = new Label
                 {
-                    Left = 320, Top = 105, Width = 70,
+                    Left = 295, Top = 105, Width = 70,
                     Text = FormatTimeLabel(initialMinutes),
                     Font = _fontHoursLabel
                 };
 
                 btnRemove = new Button
                 {
-                    Left = 370, Top = 10, Width = 70, Height = 25,
+                    Left = 345, Top = 10, Width = 65, Height = 25,
                     Text = "Delete",
                     BackColor = Color.Red, ForeColor = Color.White,
                     FlatStyle = FlatStyle.Flat,

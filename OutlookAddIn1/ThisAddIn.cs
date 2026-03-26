@@ -343,22 +343,31 @@ namespace OutlookAddIn1
             if (_timesheetCategoryEnsured) return;
             const string categoryName = "Timesheet Submitted";
             const Outlook.OlCategoryColor categoryColor = Outlook.OlCategoryColor.olCategoryColorPeach;
+
+            Outlook.NameSpace session = null;
+            Outlook.Categories categories = null;
             try
             {
-                var categories = this.Application.Session.Categories;
+                session    = this.Application.Session;
+                categories = session.Categories;
                 bool found = false;
                 foreach (Outlook.Category c in categories)
                 {
-                    if (c.Name == categoryName)
+                    Outlook.Category captured = c; // capture for finally
+                    try
                     {
-                        if (c.Color != categoryColor)
+                        if (c.Name == categoryName)
                         {
-                            categories.Remove(categoryName);
-                            categories.Add(categoryName, categoryColor);
+                            if (c.Color != categoryColor)
+                            {
+                                categories.Remove(categoryName);
+                                categories.Add(categoryName, categoryColor);
+                            }
+                            found = true;
+                            break;
                         }
-                        found = true;
-                        break;
                     }
+                    finally { Marshal.ReleaseComObject(captured); }
                 }
                 if (!found)
                     categories.Add(categoryName, categoryColor);
@@ -367,6 +376,11 @@ namespace OutlookAddIn1
             catch (Exception ex)
             {
                 System.Diagnostics.Debug.WriteLine($"EnsureTimesheetCategory failed: {ex.Message}");
+            }
+            finally
+            {
+                if (categories != null) Marshal.ReleaseComObject(categories);
+                if (session    != null) Marshal.ReleaseComObject(session);
             }
         }
 
@@ -414,33 +428,49 @@ namespace OutlookAddIn1
             if (!string.IsNullOrWhiteSpace(_cachedUserEmail))
                 return _cachedUserEmail;
 
+            Outlook.NameSpace session     = null;
+            Outlook.Recipient currentUser = null;
+            Outlook.AddressEntry ae       = null;
             try
             {
-                var session = this.Application?.Session;
-                var ae = session?.CurrentUser?.AddressEntry;
+                session     = this.Application?.Session;
+                currentUser = session?.CurrentUser;
+                ae          = currentUser?.AddressEntry;
                 if (ae != null)
                 {
                     if ("EX".Equals(ae.Type, StringComparison.OrdinalIgnoreCase))
                     {
                         const string PR_SMTP_ADDRESS = "http://schemas.microsoft.com/mapi/proptag/0x39FE001E";
-                        var smtp = ae.PropertyAccessor.GetProperty(PR_SMTP_ADDRESS) as string;
-                        if (!string.IsNullOrWhiteSpace(smtp))
+                        Outlook.PropertyAccessor pa = null;
+                        try
                         {
-                            _cachedUserEmail = smtp; // Cache for future calls
-                            return smtp;
+                            pa = ae.PropertyAccessor;
+                            var smtp = pa.GetProperty(PR_SMTP_ADDRESS) as string;
+                            if (!string.IsNullOrWhiteSpace(smtp))
+                            {
+                                _cachedUserEmail = smtp;
+                                return smtp;
+                            }
                         }
+                        finally { if (pa != null) Marshal.ReleaseComObject(pa); }
                     }
                     if (!string.IsNullOrWhiteSpace(ae.Address))
                     {
-                        _cachedUserEmail = ae.Address; // Cache for future calls
+                        _cachedUserEmail = ae.Address;
                         return ae.Address;
                     }
                 }
-                var fallback = session?.CurrentUser?.Name ?? string.Empty;
-                _cachedUserEmail = fallback; // Cache for future calls
+                var fallback = currentUser?.Name ?? string.Empty;
+                _cachedUserEmail = fallback;
                 return fallback;
             }
             catch { return string.Empty; }
+            finally
+            {
+                if (ae          != null) Marshal.ReleaseComObject(ae);
+                if (currentUser != null) Marshal.ReleaseComObject(currentUser);
+                if (session     != null) Marshal.ReleaseComObject(session);
+            }
         }
 
         private static T Safe<T>(Func<T> f)
@@ -450,44 +480,69 @@ namespace OutlookAddIn1
 
         private static string GetCurrentUserSmtp(Outlook.AppointmentItem appt)
         {
+            Outlook.NameSpace session     = null;
+            Outlook.Recipient currentUser = null;
+            Outlook.AddressEntry ae       = null;
             try
             {
-                var ae = appt?.Session?.CurrentUser?.AddressEntry;
+                session     = appt?.Session;
+                currentUser = session?.CurrentUser;
+                ae          = currentUser?.AddressEntry;
                 if (ae != null)
                 {
                     if ("EX".Equals(ae.Type, StringComparison.OrdinalIgnoreCase))
                     {
                         const string PR_SMTP_ADDRESS = "http://schemas.microsoft.com/mapi/proptag/0x39FE001E";
-                        var smtp = ae.PropertyAccessor.GetProperty(PR_SMTP_ADDRESS) as string;
-                        if (!string.IsNullOrWhiteSpace(smtp)) return smtp;
+                        Outlook.PropertyAccessor pa = null;
+                        try
+                        {
+                            pa = ae.PropertyAccessor;
+                            var smtp = pa.GetProperty(PR_SMTP_ADDRESS) as string;
+                            if (!string.IsNullOrWhiteSpace(smtp)) return smtp;
+                        }
+                        finally { if (pa != null) Marshal.ReleaseComObject(pa); }
                     }
                     if (!string.IsNullOrWhiteSpace(ae.Address)) return ae.Address;
                 }
-                return appt?.Session?.CurrentUser?.Name ?? string.Empty;
+                return currentUser?.Name ?? string.Empty;
             }
             catch { return string.Empty; }
+            finally
+            {
+                if (ae          != null) Marshal.ReleaseComObject(ae);
+                if (currentUser != null) Marshal.ReleaseComObject(currentUser);
+                if (session     != null) Marshal.ReleaseComObject(session);
+            }
         }
 
         // Get SMTP from a Recipient
         private static string GetSmtpFromRecipient(Outlook.Recipient recipient)
         {
             if (recipient == null) return string.Empty;
+            Outlook.AddressEntry ae = null;
             try
             {
-                var ae = recipient.AddressEntry;
+                ae = recipient.AddressEntry;
                 if (ae != null)
                 {
                     if ("EX".Equals(ae.Type, StringComparison.OrdinalIgnoreCase))
                     {
                         const string PR_SMTP_ADDRESS = "http://schemas.microsoft.com/mapi/proptag/0x39FE001E";
-                        var smtp = ae.PropertyAccessor.GetProperty(PR_SMTP_ADDRESS) as string;
-                        if (!string.IsNullOrWhiteSpace(smtp)) return smtp;
+                        Outlook.PropertyAccessor pa = null;
+                        try
+                        {
+                            pa = ae.PropertyAccessor;
+                            var smtp = pa.GetProperty(PR_SMTP_ADDRESS) as string;
+                            if (!string.IsNullOrWhiteSpace(smtp)) return smtp;
+                        }
+                        finally { if (pa != null) Marshal.ReleaseComObject(pa); }
                     }
                     if (!string.IsNullOrWhiteSpace(ae.Address)) return ae.Address;
                 }
                 return recipient.Address ?? string.Empty;
             }
             catch { return string.Empty; }
+            finally { if (ae != null) Marshal.ReleaseComObject(ae); }
         }
 
         // Check if email is TTI domain
@@ -516,33 +571,33 @@ namespace OutlookAddIn1
 
             var recipientEmails = new System.Collections.Generic.List<string>();
 
+            Outlook.Recipients recipients = null;
             try
             {
-                // Get all recipients from the meeting
-                if (appt.Recipients != null && appt.Recipients.Count > 0)
+                recipients = appt.Recipients;
+                if (recipients != null && recipients.Count > 0)
                 {
-                    foreach (Outlook.Recipient recipient in appt.Recipients)
+                    foreach (Outlook.Recipient recipient in recipients)
                     {
+                        Outlook.Recipient captured = recipient;
                         try
                         {
-                            var email = GetSmtpFromRecipient(recipient);
+                            var email = GetSmtpFromRecipient(captured);
                             if (!string.IsNullOrWhiteSpace(email))
-                            {
                                 recipientEmails.Add(email);
-                            }
                         }
                         catch { }
+                        finally { Marshal.ReleaseComObject(captured); }
                     }
                 }
 
                 // Add organizer if not already in list
                 var organizerEmail = GetCurrentUserSmtp(appt);
                 if (!string.IsNullOrWhiteSpace(organizerEmail) && !recipientEmails.Contains(organizerEmail))
-                {
-                    recipientEmails.Insert(0, organizerEmail); // Organizer first
-                }
+                    recipientEmails.Insert(0, organizerEmail);
             }
             catch { }
+            finally { if (recipients != null) Marshal.ReleaseComObject(recipients); }
 
             return string.Join("; ", recipientEmails);
         }

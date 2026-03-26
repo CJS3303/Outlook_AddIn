@@ -1532,7 +1532,11 @@ namespace OutlookAddIn1
             var submittedOrIgnoredKeys = new HashSet<string>();
             using (var cn = new SqlConnection(connString))
             {
-                await cn.OpenAsync().ConfigureAwait(false);
+                // NOTE: No ConfigureAwait(false) here — this method accesses Outlook COM objects
+                // after the SQL section. COM Outlook objects are STA-bound; resuming on an MTA
+                // thread-pool thread forces inter-apartment marshalling on every property access
+                // (~1-2 ms each × hundreds of calendar items = visible delay).
+                await cn.OpenAsync();
                 using (var cmd = new SqlCommand(@"
                     SELECT DISTINCT global_id, entry_id, start_utc
                     FROM db_owner.ytimesheet
@@ -1543,9 +1547,9 @@ namespace OutlookAddIn1
                     cmd.Parameters.Add(new SqlParameter("@email", SqlDbType.NVarChar, 320) { Value = email });
                     cmd.Parameters.Add(new SqlParameter("@startDate", SqlDbType.DateTime2) { Value = startDateTorontoTime });
 
-                    using (var reader = await cmd.ExecuteReaderAsync().ConfigureAwait(false))
+                    using (var reader = await cmd.ExecuteReaderAsync())
                     {
-                        while (await reader.ReadAsync().ConfigureAwait(false))
+                        while (await reader.ReadAsync())
                         {
                             var dbGlobalId = reader["global_id"] as string ?? "";
                             var dbEntryId  = reader["entry_id"]  as string ?? "";
@@ -1980,8 +1984,14 @@ namespace OutlookAddIn1
                     if ("EX".Equals(addrEntry.Type, StringComparison.OrdinalIgnoreCase))
                     {
                         const string PR_SMTP_ADDRESS = "http://schemas.microsoft.com/mapi/proptag/0x39FE001E";
-                        var smtp = addrEntry.PropertyAccessor.GetProperty(PR_SMTP_ADDRESS) as string;
-                        if (!string.IsNullOrWhiteSpace(smtp)) return smtp;
+                        Outlook.PropertyAccessor pa = null;
+                        try
+                        {
+                            pa = addrEntry.PropertyAccessor;
+                            var smtp = pa.GetProperty(PR_SMTP_ADDRESS) as string;
+                            if (!string.IsNullOrWhiteSpace(smtp)) return smtp;
+                        }
+                        finally { if (pa != null) Marshal.ReleaseComObject(pa); }
                     }
                     if (!string.IsNullOrWhiteSpace(addrEntry.Address))
                         return addrEntry.Address;
@@ -2018,8 +2028,14 @@ namespace OutlookAddIn1
                             if ("EX".Equals(addrEntry.Type, StringComparison.OrdinalIgnoreCase))
                             {
                                 const string PR_SMTP_ADDRESS = "http://schemas.microsoft.com/mapi/proptag/0x39FE001E";
-                                var smtp = addrEntry.PropertyAccessor.GetProperty(PR_SMTP_ADDRESS) as string;
-                                if (!string.IsNullOrWhiteSpace(smtp)) return smtp;
+                                Outlook.PropertyAccessor pa = null;
+                                try
+                                {
+                                    pa = addrEntry.PropertyAccessor;
+                                    var smtp = pa.GetProperty(PR_SMTP_ADDRESS) as string;
+                                    if (!string.IsNullOrWhiteSpace(smtp)) return smtp;
+                                }
+                                finally { if (pa != null) Marshal.ReleaseComObject(pa); }
                             }
                             if (!string.IsNullOrWhiteSpace(addrEntry.Address))
                                 return addrEntry.Address;
@@ -2047,8 +2063,14 @@ namespace OutlookAddIn1
                         if ("EX".Equals(currentUserAddrEntry.Type, StringComparison.OrdinalIgnoreCase))
                         {
                             const string PR_SMTP_ADDRESS = "http://schemas.microsoft.com/mapi/proptag/0x39FE001E";
-                            var smtp = currentUserAddrEntry.PropertyAccessor.GetProperty(PR_SMTP_ADDRESS) as string;
-                            if (!string.IsNullOrWhiteSpace(smtp)) return smtp;
+                            Outlook.PropertyAccessor pa = null;
+                            try
+                            {
+                                pa = currentUserAddrEntry.PropertyAccessor;
+                                var smtp = pa.GetProperty(PR_SMTP_ADDRESS) as string;
+                                if (!string.IsNullOrWhiteSpace(smtp)) return smtp;
+                            }
+                            finally { if (pa != null) Marshal.ReleaseComObject(pa); }
                         }
                         if (!string.IsNullOrWhiteSpace(currentUserAddrEntry.Address))
                             return currentUserAddrEntry.Address;
@@ -2078,6 +2100,8 @@ namespace OutlookAddIn1
             private Label lblTotalTime;
             private Label lblAllocatedTime;
             private Button btnOk, btnCancel;
+
+            private Font _fontAllocatedTime;
 
             private double _meetingDurationHours;
             private List<ProgramAllocation> _programAllocations = new List<ProgramAllocation>();
@@ -2367,11 +2391,12 @@ namespace OutlookAddIn1
                 btnAddProgram.FlatAppearance.BorderSize = 0;
                 btnAddProgram.Click += BtnAddProgram_Click;
 
+                _fontAllocatedTime = new Font("Segoe UI", 9, FontStyle.Bold);
                 lblAllocatedTime = new Label
                 {
                     Left = 170, Top = 220, Width = 295, Height = 25,
                     Text = $"Allocated: {_meetingDurationHours:F1} / {_meetingDurationHours:F1} hrs",
-                    Font = new Font("Segoe UI", 9, FontStyle.Bold),
+                    Font = _fontAllocatedTime,
                     ForeColor = Color.Green
                 };
 
@@ -2543,8 +2568,14 @@ namespace OutlookAddIn1
                         if ("EX".Equals(addrEntry.Type, StringComparison.OrdinalIgnoreCase))
                         {
                             const string PR_SMTP_ADDRESS = "http://schemas.microsoft.com/mapi/proptag/0x39FE001E";
-                            var smtp = addrEntry.PropertyAccessor.GetProperty(PR_SMTP_ADDRESS) as string;
-                            if (!string.IsNullOrWhiteSpace(smtp)) return smtp;
+                            Outlook.PropertyAccessor pa = null;
+                            try
+                            {
+                                pa = addrEntry.PropertyAccessor;
+                                var smtp = pa.GetProperty(PR_SMTP_ADDRESS) as string;
+                                if (!string.IsNullOrWhiteSpace(smtp)) return smtp;
+                            }
+                            finally { if (pa != null) Marshal.ReleaseComObject(pa); }
                         }
                         if (!string.IsNullOrWhiteSpace(addrEntry.Address)) return addrEntry.Address;
                     }
@@ -2557,6 +2588,12 @@ namespace OutlookAddIn1
                     if (currentUser != null) { Marshal.ReleaseComObject(currentUser); currentUser = null; }
                     if (session != null) { Marshal.ReleaseComObject(session); session = null; }
                 }
+            }
+
+            protected override void Dispose(bool disposing)
+            {
+                if (disposing) _fontAllocatedTime?.Dispose();
+                base.Dispose(disposing);
             }
         }
 
@@ -2588,6 +2625,8 @@ namespace OutlookAddIn1
             private TrackBar trackHours;
             private Label lblHours;
             private Button btnRemove;
+            private Font _fontHoursLabel;
+            private Font _fontRemoveButton;
             private double _maxHours;
 
             public ProgramAllocationControl(double maxHours, List<string> programs, string initProgram = null, string initActivity = null, string initStage = null)
@@ -2640,11 +2679,14 @@ namespace OutlookAddIn1
                 trackHours.ValueChanged += TrackHours_ValueChanged;
 
                 int initialMinutes = (int)(Allocation.Hours * 60);
+                _fontHoursLabel  = new Font("Segoe UI", 8, FontStyle.Bold);
+                _fontRemoveButton = new Font("Segoe UI", 8, FontStyle.Bold);
+
                 lblHours = new Label
                 {
                     Left = 320, Top = 105, Width = 70,
                     Text = FormatTimeLabel(initialMinutes),
-                    Font = new Font("Segoe UI", 8, FontStyle.Bold)
+                    Font = _fontHoursLabel
                 };
 
                 btnRemove = new Button
@@ -2653,7 +2695,7 @@ namespace OutlookAddIn1
                     Text = "Delete",
                     BackColor = Color.Red, ForeColor = Color.White,
                     FlatStyle = FlatStyle.Flat,
-                    Font = new Font("Segoe UI", 8, FontStyle.Bold)
+                    Font = _fontRemoveButton
                 };
                 btnRemove.FlatAppearance.BorderSize = 0;
                 btnRemove.Click += (s, e) => OnRemove?.Invoke(this, EventArgs.Empty);
@@ -2679,6 +2721,16 @@ namespace OutlookAddIn1
                 Allocation.Hours = minutes / 60.0;
                 lblHours.Text = FormatTimeLabel(minutes);
                 OnHoursChanged?.Invoke(this, EventArgs.Empty);
+            }
+
+            protected override void Dispose(bool disposing)
+            {
+                if (disposing)
+                {
+                    _fontHoursLabel?.Dispose();
+                    _fontRemoveButton?.Dispose();
+                }
+                base.Dispose(disposing);
             }
         }
     }

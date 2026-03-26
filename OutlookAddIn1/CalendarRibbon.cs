@@ -818,8 +818,14 @@ namespace OutlookAddIn1
                     if ("EX".Equals(addrEntry.Type, StringComparison.OrdinalIgnoreCase))
                     {
                         const string PR_SMTP_ADDRESS = "http://schemas.microsoft.com/mapi/proptag/0x39FE001E";
-                        var smtp = addrEntry.PropertyAccessor.GetProperty(PR_SMTP_ADDRESS) as string;
-                        if (!string.IsNullOrWhiteSpace(smtp)) return smtp;
+                        Outlook.PropertyAccessor pa = null;
+                        try
+                        {
+                            pa = addrEntry.PropertyAccessor;
+                            var smtp = pa.GetProperty(PR_SMTP_ADDRESS) as string;
+                            if (!string.IsNullOrWhiteSpace(smtp)) return smtp;
+                        }
+                        finally { if (pa != null) Marshal.ReleaseComObject(pa); }
                     }
                     if (!string.IsNullOrWhiteSpace(addrEntry.Address)) return addrEntry.Address;
                 }
@@ -860,8 +866,14 @@ namespace OutlookAddIn1
                     if ("EX".Equals(addrEntry.Type, StringComparison.OrdinalIgnoreCase))
                     {
                         const string PR_SMTP_ADDRESS = "http://schemas.microsoft.com/mapi/proptag/0x39FE001E";
-                        var smtp = addrEntry.PropertyAccessor.GetProperty(PR_SMTP_ADDRESS) as string;
-                        if (!string.IsNullOrWhiteSpace(smtp)) return smtp;
+                        Outlook.PropertyAccessor pa = null;
+                        try
+                        {
+                            pa = addrEntry.PropertyAccessor;
+                            var smtp = pa.GetProperty(PR_SMTP_ADDRESS) as string;
+                            if (!string.IsNullOrWhiteSpace(smtp)) return smtp;
+                        }
+                        finally { if (pa != null) Marshal.ReleaseComObject(pa); }
                     }
 
                     if (!string.IsNullOrWhiteSpace(addrEntry.Address))
@@ -908,8 +920,14 @@ namespace OutlookAddIn1
                             if ("EX".Equals(addrEntry.Type, StringComparison.OrdinalIgnoreCase))
                             {
                                 const string PR_SMTP_ADDRESS = "http://schemas.microsoft.com/mapi/proptag/0x39FE001E";
-                                var smtp = addrEntry.PropertyAccessor.GetProperty(PR_SMTP_ADDRESS) as string;
-                                if (!string.IsNullOrWhiteSpace(smtp)) return smtp;
+                                Outlook.PropertyAccessor pa = null;
+                                try
+                                {
+                                    pa = addrEntry.PropertyAccessor;
+                                    var smtp = pa.GetProperty(PR_SMTP_ADDRESS) as string;
+                                    if (!string.IsNullOrWhiteSpace(smtp)) return smtp;
+                                }
+                                finally { if (pa != null) Marshal.ReleaseComObject(pa); }
                             }
                             if (!string.IsNullOrWhiteSpace(addrEntry.Address))
                                 return addrEntry.Address;
@@ -949,8 +967,14 @@ namespace OutlookAddIn1
                         if ("EX".Equals(currentUserAddrEntry.Type, StringComparison.OrdinalIgnoreCase))
                         {
                             const string PR_SMTP_ADDRESS = "http://schemas.microsoft.com/mapi/proptag/0x39FE001E";
-                            var smtp = currentUserAddrEntry.PropertyAccessor.GetProperty(PR_SMTP_ADDRESS) as string;
-                            if (!string.IsNullOrWhiteSpace(smtp)) return smtp;
+                            Outlook.PropertyAccessor pa = null;
+                            try
+                            {
+                                pa = currentUserAddrEntry.PropertyAccessor;
+                                var smtp = pa.GetProperty(PR_SMTP_ADDRESS) as string;
+                                if (!string.IsNullOrWhiteSpace(smtp)) return smtp;
+                            }
+                            finally { if (pa != null) Marshal.ReleaseComObject(pa); }
                         }
                         if (!string.IsNullOrWhiteSpace(currentUserAddrEntry.Address))
                             return currentUserAddrEntry.Address;
@@ -1653,8 +1677,14 @@ namespace OutlookAddIn1
                         if ("EX".Equals(addrEntry.Type, StringComparison.OrdinalIgnoreCase))
                         {
                             const string PR_SMTP_ADDRESS = "http://schemas.microsoft.com/mapi/proptag/0x39FE001E";
-                            var smtp = addrEntry.PropertyAccessor.GetProperty(PR_SMTP_ADDRESS) as string;
-                            if (!string.IsNullOrWhiteSpace(smtp)) return smtp;
+                            Outlook.PropertyAccessor pa = null;
+                            try
+                            {
+                                pa = addrEntry.PropertyAccessor;
+                                var smtp = pa.GetProperty(PR_SMTP_ADDRESS) as string;
+                                if (!string.IsNullOrWhiteSpace(smtp)) return smtp;
+                            }
+                            finally { if (pa != null) Marshal.ReleaseComObject(pa); }
                         }
                         if (!string.IsNullOrWhiteSpace(addrEntry.Address)) return addrEntry.Address;
                     }

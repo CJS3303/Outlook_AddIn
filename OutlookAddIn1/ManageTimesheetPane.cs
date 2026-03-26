@@ -428,7 +428,7 @@ namespace OutlookAddIn1
         {
             try
             {
-                flowSubmitted.Invoke((MethodInvoker)delegate
+                this.Invoke((MethodInvoker)delegate
                 {
                     DisposeAndClearControls(flowSubmitted.Controls);
                     flowSubmitted.Controls.Add(new Label
@@ -555,7 +555,7 @@ namespace OutlookAddIn1
                     .Where(i => i.StartTorontoTime.Date >= today.AddDays(-7) && i.StartTorontoTime.Date < today.AddDays(-1))
                     .OrderByDescending(i => i.StartTorontoTime).ToList();
 
-                flowSubmitted.Invoke((MethodInvoker)delegate
+                this.Invoke((MethodInvoker)delegate
                 {
                     DisposeAndClearControls(flowSubmitted.Controls);
 
@@ -580,7 +580,7 @@ namespace OutlookAddIn1
             }
             catch (Exception ex)
             {
-                flowSubmitted.Invoke((MethodInvoker)delegate
+                this.Invoke((MethodInvoker)delegate
                 {
                     DisposeAndClearControls(flowSubmitted.Controls);
                     flowSubmitted.Controls.Add(new Label

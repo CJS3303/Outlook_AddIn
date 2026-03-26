@@ -492,14 +492,20 @@ namespace OutlookAddIn1
                         {
                             while (await reader.ReadAsync().ConfigureAwait(false))
                             {
-                                var startUtc = reader["start_utc"] is DateTime s ? s : DateTime.MinValue;
+                                // DB stores Toronto local time in start_utc / end_utc (column is misnamed).
+                                // Convert Toronto → UTC so StartTorontoTime round-trips back correctly,
+                                // and the @start_utc param in CancelIgnoreTimesheetAsync matches the stored value.
+                                var startTorontoTime = reader["start_utc"] is DateTime s ? s : DateTime.MinValue;
+                                var endTorontoTime   = reader["end_utc"]   is DateTime e ? e : DateTime.MinValue;
+                                var startUtc = TimeZoneInfo.ConvertTimeToUtc(startTorontoTime, TorontoTz);
+                                var endUtc   = TimeZoneInfo.ConvertTimeToUtc(endTorontoTime,   TorontoTz);
                                 ignoredMeetings.Add(new MeetingRecord
                                 {
                                     GlobalId = reader["global_id"] as string ?? "",
                                     EntryId = reader["entry_id"] as string ?? "",
                                     Subject = reader["subject"] as string ?? "",
                                     StartUtc = startUtc,
-                                    EndUtc = reader["end_utc"] is DateTime e ? e : DateTime.MinValue,
+                                    EndUtc   = endUtc,
                                     UserDisplayName = email,
                                     Status = "ignored"
                                 });

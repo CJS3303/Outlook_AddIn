@@ -78,10 +78,6 @@ namespace OutlookAddIn1
         private List<MeetingRecord> _cachedUnsubmittedMeetings = null;
         private DateTime _cacheExpiry = DateTime.MinValue;
 
-        // Cache for submitted/ignored meetings (TTL: 5 minutes)
-        private List<SubmittedTabItem> _cachedSubmittedItems = null;
-        private DateTime _submittedCacheExpiry = DateTime.MinValue;
-
         // PERF: Cache timezone lookup — FindSystemTimeZoneById scans the OS registry each call
         private static readonly TimeZoneInfo TorontoTz =
             TimeZoneInfo.FindSystemTimeZoneById("Eastern Standard Time");
@@ -347,12 +343,7 @@ namespace OutlookAddIn1
                 Size = new Size(35, 25)
             };
             btnRefreshSubmitted.Location = new Point(topSubmitted.Width - 45, 10);
-            btnRefreshSubmitted.Click += async (s, e) =>
-            {
-                _cachedSubmittedItems = null;
-                _submittedCacheExpiry = DateTime.MinValue;
-                await LoadSubmittedMeetingsAsync();
-            };
+            btnRefreshSubmitted.Click += async (s, e) => await LoadSubmittedMeetingsAsync();
             topSubmitted.Controls.AddRange(new Control[] { lblSubmittedTitle, btnRefreshSubmitted });
             topSubmitted.Resize += (s, e) =>
                 btnRefreshSubmitted.Location = new Point(topSubmitted.Width - 45, 10);
@@ -423,36 +414,6 @@ namespace OutlookAddIn1
         {
             try
             {
-                // PERF: Return cached data if fresh (5-minute TTL)
-                if (_cachedSubmittedItems != null && DateTime.Now < _submittedCacheExpiry)
-                {
-                    var cachedItems = _cachedSubmittedItems;
-                    flowSubmitted.Invoke((MethodInvoker)delegate
-                    {
-                        DisposeAndClearControls(flowSubmitted.Controls);
-                        if (cachedItems.Count == 0)
-                        {
-                            flowSubmitted.Controls.Add(new Label
-                            {
-                                Text = "No submitted or ignored events found.",
-                                Font = _fontLabel,
-                                Size = new Size(flowSubmitted.Width - 25, 40),
-                                ForeColor = Color.Gray
-                            });
-                            return;
-                        }
-                        var today = DateTime.Today;
-                        var todayItems     = cachedItems.Where(i => i.StartTorontoTime.Date == today).OrderByDescending(i => i.StartTorontoTime).ToList();
-                        var yesterdayItems = cachedItems.Where(i => i.StartTorontoTime.Date == today.AddDays(-1)).OrderByDescending(i => i.StartTorontoTime).ToList();
-                        var lastWeekItems  = cachedItems.Where(i => i.StartTorontoTime.Date >= today.AddDays(-7) && i.StartTorontoTime.Date < today.AddDays(-1)).OrderByDescending(i => i.StartTorontoTime).ToList();
-                        if (todayItems.Count > 0)     AddSubmittedTabSection("Today",     todayItems);
-                        if (yesterdayItems.Count > 0) AddSubmittedTabSection("Yesterday", yesterdayItems);
-                        if (lastWeekItems.Count > 0)  AddSubmittedTabSection("Last Week", lastWeekItems);
-                        flowSubmitted.Controls.Add(new Label { Size = new Size(flowSubmitted.Width - 25, 100), Text = "" });
-                    });
-                    return;
-                }
-
                 flowSubmitted.Invoke((MethodInvoker)delegate
                 {
                     DisposeAndClearControls(flowSubmitted.Controls);
@@ -559,10 +520,6 @@ namespace OutlookAddIn1
                     .ToList();
 
                 var allItems = groupedSubmitted.Concat(groupedIgnored).ToList();
-
-                // Cache for 5 minutes — invalidated by refresh button / cancel actions
-                _cachedSubmittedItems = allItems;
-                _submittedCacheExpiry = DateTime.Now.AddMinutes(5);
 
                 var today = DateTime.Today;
 
@@ -778,8 +735,6 @@ namespace OutlookAddIn1
                 if (deletedCount > 0)
                 {
                     System.Diagnostics.Debug.WriteLine($"CancelSubmissionAsync: Deletion complete, reloading submitted meetings");
-                    _cachedSubmittedItems = null;
-                    _submittedCacheExpiry = DateTime.MinValue;
                     MessageBox.Show(
                         meetings.Count > 1
                             ? $"Deleted {deletedCount} program record(s) for this meeting."
@@ -829,8 +784,6 @@ namespace OutlookAddIn1
                 {
                     System.Diagnostics.Debug.WriteLine("CancelIgnoreSubmissionAsync: Successfully un-ignored, reloading");
                     MessageBox.Show("Ignore status removed!", "Un-Ignored");
-                    _cachedSubmittedItems = null;
-                    _submittedCacheExpiry = DateTime.MinValue;
                     await LoadSubmittedMeetingsAsync();
                     await LoadUnsubmittedMeetingsAsync();
                 }

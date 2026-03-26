@@ -160,16 +160,15 @@ namespace OutlookAddIn1
 
         public async Task LoadDataAsync()
         {
-            try
-            {
-                await LoadWeeklyDataAsync();
-                await LoadSubmittedMeetingsAsync();
-                await LoadUnsubmittedMeetingsAsync();
-            }
-            catch (Exception ex)
-            {
-                System.Diagnostics.Debug.WriteLine($"LoadDataAsync failed: {ex.Message}");
-            }
+            // Each tab loads independently — a failure in one never blocks the others.
+            try { await LoadWeeklyDataAsync(); }
+            catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"LoadWeeklyDataAsync failed: {ex.Message}"); }
+
+            try { await LoadSubmittedMeetingsAsync(); }
+            catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"LoadSubmittedMeetingsAsync failed: {ex.Message}"); }
+
+            try { await LoadUnsubmittedMeetingsAsync(); }
+            catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"LoadUnsubmittedMeetingsAsync failed: {ex.Message}"); }
         }
 
         private void InitializeComponent()
@@ -414,17 +413,16 @@ namespace OutlookAddIn1
         {
             try
             {
-                flowSubmitted.Invoke((MethodInvoker)delegate
+                // Called on the UI thread — direct call is safe and avoids Invoke throwing
+                // when the window handle hasn't been created yet (early initial load).
+                DisposeAndClearControls(flowSubmitted.Controls);
+                flowSubmitted.Controls.Add(new Label
                 {
-                    DisposeAndClearControls(flowSubmitted.Controls);
-                    flowSubmitted.Controls.Add(new Label
-                    {
-                        Text = "Loading submitted events...",
-                        Font = _fontLabel,
-                        Width = flowSubmitted.Width - 20,
-                        Height = 30,
-                        ForeColor = Color.Gray
-                    });
+                    Text = "Loading submitted events...",
+                    Font = _fontLabel,
+                    Width = flowSubmitted.Width - 20,
+                    Height = 30,
+                    ForeColor = Color.Gray
                 });
 
                 var email = GetCurrentUserEmail();
@@ -1261,31 +1259,22 @@ namespace OutlookAddIn1
             {
                 var weekEnd = _currentWeekStart.AddDays(6);
 
-                // ✅ FIX: Marshal to UI thread BEFORE accessing UI controls
-                this.Invoke((MethodInvoker)delegate
-                {
-                    lblWeekRange.Text = $"{_currentWeekStart:MMM dd} - {weekEnd:MMM dd, yyyy}";
-                });
+                // Called on the UI thread (no awaits yet) — direct property set is safe.
+                // Avoid Invoke here: if the window handle isn't created yet Invoke throws,
+                // which would silently abort the entire load chain.
+                lblWeekRange.Text = $"{_currentWeekStart:MMM dd} - {weekEnd:MMM dd, yyyy}";
 
                 var email = GetCurrentUserEmail();
                 if (string.IsNullOrWhiteSpace(email))
                 {
-                    // ✅ FIX: Use Invoke for error message too
-                    this.Invoke((MethodInvoker)delegate
-                    {
-                        MessageBox.Show("Unable to determine current user email.", "Error");
-                    });
+                    MessageBox.Show("Unable to determine current user email.", "Error");
                     return;
                 }
 
                 var connString = ConfigurationManager.ConnectionStrings["OemsDatabase"]?.ConnectionString;
                 if (string.IsNullOrWhiteSpace(connString))
                 {
-                    // ✅ FIX: Use Invoke for error message too
-                    this.Invoke((MethodInvoker)delegate
-                    {
-                        MessageBox.Show("Database connection not configured.", "Error");
-                    });
+                    MessageBox.Show("Database connection not configured.", "Error");
                     return;
                 }
 
@@ -1390,33 +1379,30 @@ namespace OutlookAddIn1
 
         private void ShowLoadingMessage(string message)
         {
-            this.Invoke((MethodInvoker)delegate
+            // Always called on the UI thread (before any await in LoadUnsubmittedMeetingsAsync).
+            // Direct call avoids Invoke throwing if the window handle isn't created yet.
+            DisposeAndClearControls(flowUnsubmitted.Controls);
+            flowUnsubmitted.Controls.Add(new Label
             {
-                DisposeAndClearControls(flowUnsubmitted.Controls);
-                flowUnsubmitted.Controls.Add(new Label
-                {
-                    Text = message,
-                    Font = _fontLabel,
-                    Width = flowUnsubmitted.Width - 20,
-                    Height = 30,
-                    ForeColor = Color.Gray
-                });
+                Text = message,
+                Font = _fontLabel,
+                Width = flowUnsubmitted.Width - 20,
+                Height = 30,
+                ForeColor = Color.Gray
             });
         }
 
         private void ShowErrorMessage(string message)
         {
-            this.Invoke((MethodInvoker)delegate
+            // Called from catch block in LoadUnsubmittedMeetingsAsync — UI thread, no Invoke needed.
+            DisposeAndClearControls(flowUnsubmitted.Controls);
+            flowUnsubmitted.Controls.Add(new Label
             {
-                DisposeAndClearControls(flowUnsubmitted.Controls);
-                flowUnsubmitted.Controls.Add(new Label
-                {
-                    Text = message,
-                    Font = _fontLabel,
-                    Width = flowUnsubmitted.Width - 20,
-                    Height = 60,
-                    ForeColor = Color.Red
-                });
+                Text = message,
+                Font = _fontLabel,
+                Width = flowUnsubmitted.Width - 20,
+                Height = 60,
+                ForeColor = Color.Red
             });
         }
 

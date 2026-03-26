@@ -798,7 +798,9 @@ namespace OutlookAddIn1
         {
             try
             {
-                if (_manageTimesheetPane == null)
+                bool isNewPane = (_manageTimesheetPane == null);
+
+                if (isNewPane)
                 {
                     var paneControl = new ManageTimesheetPane();
                     _manageTimesheetPane = this.CustomTaskPanes.Add(paneControl, "Manage Timesheet");
@@ -826,12 +828,15 @@ namespace OutlookAddIn1
 
                 _manageTimesheetPane.Visible = true;
 
-                // Explicitly trigger data load after pane is visible.
-                // OnVisibleChanged can misfire during CustomTaskPanes.Add(), so this
-                // guarantees data loads on first open regardless of event timing.
-                var ctrl = _manageTimesheetPane.Control as ManageTimesheetPane;
-                if (ctrl != null)
-                    _ = ctrl.LoadDataAsync();
+                // First open: HandleCreated event inside ManageTimesheetPane fires once the
+                // window handle exists and triggers LoadDataAsync() — no call needed here.
+                // Re-opens: HandleCreated already fired and unsubscribed, so we trigger here.
+                if (!isNewPane)
+                {
+                    var ctrl = _manageTimesheetPane.Control as ManageTimesheetPane;
+                    if (ctrl != null)
+                        _ = ctrl.LoadDataAsync();
+                }
             }
             catch (Exception ex)
             {

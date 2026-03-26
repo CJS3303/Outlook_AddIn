@@ -293,39 +293,12 @@ namespace OutlookAddIn1
                             }
                             else
                             {
-                                var categoryName = "Timesheet Submitted";
-                                var categoryColor = Outlook.OlCategoryColor.olCategoryColorPeach;
+                                const string categoryName = "Timesheet Submitted";
 
-                                System.Diagnostics.Debug.WriteLine($"OnSubmitTimesheet: About to apply category. Current appt.Categories='{appt.Categories}'");
-                                System.Diagnostics.Debug.WriteLine($"OnSubmitTimesheet: appt.EntryID={appt.EntryID}");
-                                System.Diagnostics.Debug.WriteLine($"OnSubmitTimesheet: RecurrenceState={appt.RecurrenceState}");
+                                // PERF: Shared cached helper — skips COM scan after first successful call
+                                Globals.ThisAddIn.EnsureTimesheetCategory();
 
-                                // Check if category exists, if not create it
-                                var categories = Globals.ThisAddIn.Application.Session.Categories;
-                                var existingCategory = categories.Cast<Outlook.Category>()
-                                    .FirstOrDefault(c => c.Name == categoryName);
-
-                                if (existingCategory == null)
-                                {
-                                    System.Diagnostics.Debug.WriteLine($"OnSubmitTimesheet: Category '{categoryName}' does not exist, creating with Peach color");
-                                    categories.Add(categoryName, categoryColor);
-                                    System.Diagnostics.Debug.WriteLine($"OnSubmitTimesheet: Category created successfully");
-                                }
-                                else
-                                {
-                                    System.Diagnostics.Debug.WriteLine($"OnSubmitTimesheet: Category '{categoryName}' already exists with color {existingCategory.Color}");
-
-                                    // ✅ FIX: If category exists with wrong color, delete and recreate it
-                                    if (existingCategory.Color != categoryColor)
-                                    {
-                                        System.Diagnostics.Debug.WriteLine($"OnSubmitTimesheet: Category has wrong color ({existingCategory.Color}), deleting and recreating with Peach");
-                                        categories.Remove(categoryName);
-                                        categories.Add(categoryName, categoryColor);
-                                        System.Diagnostics.Debug.WriteLine($"OnSubmitTimesheet: Category recreated with Peach color");
-                                    }
-                                }
-
-                                // Remove any existing timesheet categories first
+                                // Merge with non-timesheet categories already on the appointment
                                 if (!string.IsNullOrEmpty(appt.Categories))
                                 {
                                     var existingCategories = appt.Categories.Split(new[] { ',', ';' }, StringSplitOptions.RemoveEmptyEntries)
@@ -336,16 +309,14 @@ namespace OutlookAddIn1
 
                                     existingCategories.Add(categoryName);
                                     appt.Categories = string.Join(", ", existingCategories);
-                                    System.Diagnostics.Debug.WriteLine($"OnSubmitTimesheet: Updated categories (had existing): '{appt.Categories}'");
                                 }
                                 else
                                 {
                                     appt.Categories = categoryName;
-                                    System.Diagnostics.Debug.WriteLine($"OnSubmitTimesheet: Set categories (was empty): '{appt.Categories}'");
                                 }
 
                                 appt.Save();
-                                System.Diagnostics.Debug.WriteLine($"OnSubmitTimesheet: appt.Save() completed. Final categories='{appt.Categories}'");
+                                System.Diagnostics.Debug.WriteLine($"OnSubmitTimesheet: Applied category. Final='{appt.Categories}'");
                             }
                         }
                         catch (Exception catEx)
@@ -448,39 +419,12 @@ namespace OutlookAddIn1
                             }
                             else
                             {
-                                var categoryName = "Timesheet Submitted";
-                                var categoryColor = Outlook.OlCategoryColor.olCategoryColorPeach;
+                                const string categoryName = "Timesheet Submitted";
 
-                                System.Diagnostics.Debug.WriteLine($"OnSubmitTimesheet: About to apply category. Current appt.Categories='{appt.Categories}'");
-                                System.Diagnostics.Debug.WriteLine($"OnSubmitTimesheet: appt.EntryID={appt.EntryID}");
+                                // PERF: Shared cached helper — skips COM scan after first successful call
+                                Globals.ThisAddIn.EnsureTimesheetCategory();
 
-                                // Check if category exists, if not create it
-                                var categories = Globals.ThisAddIn.Application.Session.Categories;
-                                var existingCategory = categories.Cast<Outlook.Category>()
-                                    .FirstOrDefault(c => c.Name == categoryName);
-
-
-                                if (existingCategory == null)
-                                {
-                                    System.Diagnostics.Debug.WriteLine($"OnSubmitTimesheet: Category '{categoryName}' does not exist, creating with Peach color");
-                                    categories.Add(categoryName, categoryColor);
-                                    System.Diagnostics.Debug.WriteLine($"OnSubmitTimesheet: Category created successfully");
-                                }
-                                else
-                                {
-                                    System.Diagnostics.Debug.WriteLine($"OnSubmitTimesheet: Category '{categoryName}' already exists with color {existingCategory.Color}");
-
-                                    // ✅ FIX: If category exists with wrong color, delete and recreate it
-                                    if (existingCategory.Color != categoryColor)
-                                    {
-                                        System.Diagnostics.Debug.WriteLine($"OnSubmitTimesheet: Category has wrong color ({existingCategory.Color}), deleting and recreating with Peach");
-                                        categories.Remove(categoryName);
-                                        categories.Add(categoryName, categoryColor);
-                                        System.Diagnostics.Debug.WriteLine($"OnSubmitTimesheet: Category recreated with Peach color");
-                                    }
-                                }
-
-                                // Remove any existing timesheet categories first
+                                // Merge with non-timesheet categories already on the appointment
                                 if (!string.IsNullOrEmpty(appt.Categories))
                                 {
                                     var existingCategories = appt.Categories.Split(new[] { ',', ';' }, StringSplitOptions.RemoveEmptyEntries)
@@ -491,16 +435,14 @@ namespace OutlookAddIn1
 
                                     existingCategories.Add(categoryName);
                                     appt.Categories = string.Join(", ", existingCategories);
-                                    System.Diagnostics.Debug.WriteLine($"OnSubmitTimesheet: Updated categories (had existing): '{appt.Categories}'");
                                 }
                                 else
                                 {
                                     appt.Categories = categoryName;
-                                    System.Diagnostics.Debug.WriteLine($"OnSubmitTimesheet: Set categories (was empty): '{appt.Categories}'");
                                 }
 
                                 appt.Save();
-                                System.Diagnostics.Debug.WriteLine($"OnSubmitTimesheet: appt.Save() completed. Final categories='{appt.Categories}'");
+                                System.Diagnostics.Debug.WriteLine($"OnSubmitTimesheet: Applied category. Final='{appt.Categories}'");
                             }
                         }
                         catch (Exception catEx)

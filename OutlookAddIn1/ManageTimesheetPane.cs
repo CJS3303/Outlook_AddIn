@@ -78,6 +78,14 @@ namespace OutlookAddIn1
         private List<MeetingRecord> _cachedUnsubmittedMeetings = null;
         private DateTime _cacheExpiry = DateTime.MinValue;
 
+        // Cache for submitted/ignored meetings (TTL: 5 minutes)
+        private List<SubmittedTabItem> _cachedSubmittedItems = null;
+        private DateTime _submittedCacheExpiry = DateTime.MinValue;
+
+        // PERF: Cache timezone lookup — FindSystemTimeZoneById scans the OS registry each call
+        private static readonly TimeZoneInfo TorontoTz =
+            TimeZoneInfo.FindSystemTimeZoneById("Eastern Standard Time");
+
         // Win32: hide scrollbar visually while keeping mouse-wheel scrolling functional
         [DllImport("user32.dll")] private static extern bool ShowScrollBar(IntPtr hWnd, int wBar, bool bShow);
         private const int SB_VERT = 1;
@@ -100,7 +108,6 @@ namespace OutlookAddIn1
                              Math.Min(panel.VerticalScroll.Maximum,
                                       panel.VerticalScroll.Value - e.Delta));
                 panel.VerticalScroll.Value = newVal;
-                panel.PerformLayout();
             };
         }
 
@@ -340,7 +347,12 @@ namespace OutlookAddIn1
                 Size = new Size(35, 25)
             };
             btnRefreshSubmitted.Location = new Point(topSubmitted.Width - 45, 10);
-            btnRefreshSubmitted.Click += async (s, e) => await LoadSubmittedMeetingsAsync();
+            btnRefreshSubmitted.Click += async (s, e) =>
+            {
+                _cachedSubmittedItems = null;
+                _submittedCacheExpiry = DateTime.MinValue;
+                await LoadSubmittedMeetingsAsync();
+            };
             topSubmitted.Controls.AddRange(new Control[] { lblSubmittedTitle, btnRefreshSubmitted });
             topSubmitted.Resize += (s, e) =>
                 btnRefreshSubmitted.Location = new Point(topSubmitted.Width - 45, 10);
@@ -411,6 +423,36 @@ namespace OutlookAddIn1
         {
             try
             {
+                // PERF: Return cached data if fresh (5-minute TTL)
+                if (_cachedSubmittedItems != null && DateTime.Now < _submittedCacheExpiry)
+                {
+                    var cachedItems = _cachedSubmittedItems;
+                    flowSubmitted.Invoke((MethodInvoker)delegate
+                    {
+                        DisposeAndClearControls(flowSubmitted.Controls);
+                        if (cachedItems.Count == 0)
+                        {
+                            flowSubmitted.Controls.Add(new Label
+                            {
+                                Text = "No submitted or ignored events found.",
+                                Font = _fontLabel,
+                                Size = new Size(flowSubmitted.Width - 25, 40),
+                                ForeColor = Color.Gray
+                            });
+                            return;
+                        }
+                        var today = DateTime.Today;
+                        var todayItems     = cachedItems.Where(i => i.StartTorontoTime.Date == today).OrderByDescending(i => i.StartTorontoTime).ToList();
+                        var yesterdayItems = cachedItems.Where(i => i.StartTorontoTime.Date == today.AddDays(-1)).OrderByDescending(i => i.StartTorontoTime).ToList();
+                        var lastWeekItems  = cachedItems.Where(i => i.StartTorontoTime.Date >= today.AddDays(-7) && i.StartTorontoTime.Date < today.AddDays(-1)).OrderByDescending(i => i.StartTorontoTime).ToList();
+                        if (todayItems.Count > 0)     AddSubmittedTabSection("Today",     todayItems);
+                        if (yesterdayItems.Count > 0) AddSubmittedTabSection("Yesterday", yesterdayItems);
+                        if (lastWeekItems.Count > 0)  AddSubmittedTabSection("Last Week", lastWeekItems);
+                        flowSubmitted.Controls.Add(new Label { Size = new Size(flowSubmitted.Width - 25, 100), Text = "" });
+                    });
+                    return;
+                }
+
                 flowSubmitted.Invoke((MethodInvoker)delegate
                 {
                     DisposeAndClearControls(flowSubmitted.Controls);
@@ -435,7 +477,7 @@ namespace OutlookAddIn1
 
                 using (var cn = new SqlConnection(connString))
                 {
-                    await cn.OpenAsync();
+                    await cn.OpenAsync().ConfigureAwait(false);
                     
                     // ✅ Load SUBMITTED records (status = 'submitted')
                     using (var cmd = new SqlCommand(@"
@@ -447,18 +489,17 @@ namespace OutlookAddIn1
                         ORDER BY start_utc DESC", cn))
                     {
                         cmd.Parameters.Add(new SqlParameter("@email", SqlDbType.NVarChar, 320) { Value = email });
-                        using (var reader = await cmd.ExecuteReaderAsync())
+                        using (var reader = await cmd.ExecuteReaderAsync().ConfigureAwait(false))
                         {
-                            while (await reader.ReadAsync())
+                            while (await reader.ReadAsync().ConfigureAwait(false))
                             {
                                 var startTorontoTime = reader["start_utc"] is DateTime s ? s : DateTime.MinValue;
                                 var endTorontoTime = reader["end_utc"] is DateTime e ? e : DateTime.MinValue;
                                 
                                 // ✅ CRITICAL FIX: Database stores Toronto time in start_utc column
                                 // We need to convert it back to UTC for the MeetingRecord
-                                var torontoTz = TimeZoneInfo.FindSystemTimeZoneById("Eastern Standard Time");
-                                var startUtc = TimeZoneInfo.ConvertTimeToUtc(startTorontoTime, torontoTz);
-                                var endUtc = TimeZoneInfo.ConvertTimeToUtc(endTorontoTime, torontoTz);
+                                var startUtc = TimeZoneInfo.ConvertTimeToUtc(startTorontoTime, TorontoTz);
+                                var endUtc   = TimeZoneInfo.ConvertTimeToUtc(endTorontoTime,   TorontoTz);
                                 
                                 submittedMeetings.Add(new MeetingRecord
                                 {
@@ -486,9 +527,9 @@ namespace OutlookAddIn1
                         ORDER BY start_utc DESC", cn))
                     {
                         cmd.Parameters.Add(new SqlParameter("@email", SqlDbType.NVarChar, 320) { Value = email });
-                        using (var reader = await cmd.ExecuteReaderAsync())
+                        using (var reader = await cmd.ExecuteReaderAsync().ConfigureAwait(false))
                         {
-                            while (await reader.ReadAsync())
+                            while (await reader.ReadAsync().ConfigureAwait(false))
                             {
                                 var startUtc = reader["start_utc"] is DateTime s ? s : DateTime.MinValue;
                                 ignoredMeetings.Add(new MeetingRecord
@@ -518,6 +559,10 @@ namespace OutlookAddIn1
                     .ToList();
 
                 var allItems = groupedSubmitted.Concat(groupedIgnored).ToList();
+
+                // Cache for 5 minutes — invalidated by refresh button / cancel actions
+                _cachedSubmittedItems = allItems;
+                _submittedCacheExpiry = DateTime.Now.AddMinutes(5);
 
                 var today = DateTime.Today;
 
@@ -733,6 +778,8 @@ namespace OutlookAddIn1
                 if (deletedCount > 0)
                 {
                     System.Diagnostics.Debug.WriteLine($"CancelSubmissionAsync: Deletion complete, reloading submitted meetings");
+                    _cachedSubmittedItems = null;
+                    _submittedCacheExpiry = DateTime.MinValue;
                     MessageBox.Show(
                         meetings.Count > 1
                             ? $"Deleted {deletedCount} program record(s) for this meeting."
@@ -782,6 +829,8 @@ namespace OutlookAddIn1
                 {
                     System.Diagnostics.Debug.WriteLine("CancelIgnoreSubmissionAsync: Successfully un-ignored, reloading");
                     MessageBox.Show("Ignore status removed!", "Un-Ignored");
+                    _cachedSubmittedItems = null;
+                    _submittedCacheExpiry = DateTime.MinValue;
                     await LoadSubmittedMeetingsAsync();
                     await LoadUnsubmittedMeetingsAsync();
                 }
@@ -1134,9 +1183,10 @@ namespace OutlookAddIn1
 
                 session = Globals.ThisAddIn.Application.Session;
                 categories = session.Categories;
-                existingCategory = System.Linq.Enumerable.FirstOrDefault(
-                    System.Linq.Enumerable.Cast<Microsoft.Office.Interop.Outlook.Category>(categories),
-                    c => c.Name == categoryName);
+                foreach (Microsoft.Office.Interop.Outlook.Category c in categories)
+                {
+                    if (c.Name == categoryName) { existingCategory = c; break; }
+                }
 
                 if (existingCategory == null)
                 {
@@ -1287,7 +1337,7 @@ namespace OutlookAddIn1
 
                 using (var cn = new SqlConnection(connString))
                 {
-                    await cn.OpenAsync();
+                    await cn.OpenAsync().ConfigureAwait(false);
 
                     // Current week
                     using (var cmd = new SqlCommand("dbo.Timesheet_GetWeeklyData", cn))
@@ -1297,9 +1347,9 @@ namespace OutlookAddIn1
                         cmd.Parameters.AddWithValue("@weekStart", _currentWeekStart);
                         cmd.Parameters.AddWithValue("@weekEnd", _currentWeekStart.AddDays(6));
 
-                        using (var reader = await cmd.ExecuteReaderAsync())
+                        using (var reader = await cmd.ExecuteReaderAsync().ConfigureAwait(false))
                         {
-                            while (await reader.ReadAsync())
+                            while (await reader.ReadAsync().ConfigureAwait(false))
                             {
                                 var workDate = reader.GetDateTime(0);
                                 double hours = 0;
@@ -1322,9 +1372,9 @@ namespace OutlookAddIn1
                         cmd.Parameters.AddWithValue("@weekStart", lastWeekStart);
                         cmd.Parameters.AddWithValue("@weekEnd", lastWeekStart.AddDays(6));
 
-                        using (var reader = await cmd.ExecuteReaderAsync())
+                        using (var reader = await cmd.ExecuteReaderAsync().ConfigureAwait(false))
                         {
-                            while (await reader.ReadAsync())
+                            while (await reader.ReadAsync().ConfigureAwait(false))
                             {
                                 if (!reader.IsDBNull(1))
                                 {
@@ -1520,8 +1570,7 @@ namespace OutlookAddIn1
             if (string.IsNullOrWhiteSpace(connString))
                 throw new InvalidOperationException("Database connection not configured.");
 
-            var torontoTz = TimeZoneInfo.FindSystemTimeZoneById("Eastern Standard Time");
-            var nowTorontoTime = TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, torontoTz);
+            var nowTorontoTime = TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, TorontoTz);
             // Use midnight (Date) so the window matches the Outlook filter exactly
             var startDateTorontoTime = nowTorontoTime.Date.AddDays(-7);
 
@@ -1530,7 +1579,7 @@ namespace OutlookAddIn1
             var submittedOrIgnoredKeys = new HashSet<string>();
             using (var cn = new SqlConnection(connString))
             {
-                await cn.OpenAsync();
+                await cn.OpenAsync().ConfigureAwait(false);
                 using (var cmd = new SqlCommand(@"
                     SELECT DISTINCT global_id, entry_id, start_utc
                     FROM db_owner.ytimesheet
@@ -1541,9 +1590,9 @@ namespace OutlookAddIn1
                     cmd.Parameters.Add(new SqlParameter("@email", SqlDbType.NVarChar, 320) { Value = email });
                     cmd.Parameters.Add(new SqlParameter("@startDate", SqlDbType.DateTime2) { Value = startDateTorontoTime });
 
-                    using (var reader = await cmd.ExecuteReaderAsync())
+                    using (var reader = await cmd.ExecuteReaderAsync().ConfigureAwait(false))
                     {
-                        while (await reader.ReadAsync())
+                        while (await reader.ReadAsync().ConfigureAwait(false))
                         {
                             var dbGlobalId = reader["global_id"] as string ?? "";
                             var dbEntryId  = reader["entry_id"]  as string ?? "";
@@ -1617,7 +1666,7 @@ namespace OutlookAddIn1
                             if (string.IsNullOrWhiteSpace(globalId))
                                 continue;
 
-                            var apptStartTorontoTime = TimeZoneInfo.ConvertTimeFromUtc(apptStartUtc, torontoTz);
+                            var apptStartTorontoTime = TimeZoneInfo.ConvertTimeFromUtc(apptStartUtc, TorontoTz);
                             var dateStr = $"{apptStartTorontoTime:yyyy-MM-dd}";
 
                             // Check BOTH IDs against the submitted/ignored set

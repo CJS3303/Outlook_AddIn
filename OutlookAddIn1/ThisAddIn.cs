@@ -15,6 +15,9 @@ namespace OutlookAddIn1
         // PERFORMANCE: Cache current user email (avoid repeated COM calls)
         private string _cachedUserEmail = null;
 
+        // PERFORMANCE: Once the "Timesheet Submitted" category is confirmed correct, skip COM scan
+        private bool _timesheetCategoryEnsured = false;
+
         private void ThisAddIn_Startup(object sender, EventArgs e)
         {
             // Wire ItemSend immediately (lightweight, no MAPI access)
@@ -154,76 +157,10 @@ namespace OutlookAddIn1
 
                 System.Diagnostics.Debug.WriteLine($"{source}: {subject} - Start: {startUtc:yyyy-MM-dd HH:mm}");
 
-                // ✅ OPTIMIZED: Fire-and-forget background update (fully non-blocking)
-                System.Threading.Tasks.Task.Run(async () =>
-                {
-                    // ✅ CRITICAL FIX: Only update if timesheet already exists in database
-                    // This prevents auto-submitting NEW meetings created via "New Online Meeting"
-                    var tempRec = new MeetingRecord
-                    {
-                        GlobalId = globalIdFallback,
-                        EntryId = entryId,
-                        StartUtc = startUtc,
-                        UserDisplayName = currentUserEmail
-                    };
-
-                    try
-                    {
-                        var existing = await DbWriter.GetExistingTimesheetAsync(tempRec);
-                        if (existing == null)
-                        {
-                            System.Diagnostics.Debug.WriteLine($"{source}: Skipping '{subject}' - no existing timesheet found (new meeting must be manually submitted)");
-                            return; // ✅ EXIT: Don't auto-submit new meetings!
-                        }
-
-                        System.Diagnostics.Debug.WriteLine($"{source}: Existing timesheet found for '{subject}' - proceeding with update");
-                    }
-                    catch (Exception checkEx)
-                    {
-                        System.Diagnostics.Debug.WriteLine($"{source}: Failed to check existing timesheet: {checkEx.Message}");
-                        return; // ✅ If we can't check, don't risk auto-submitting
-                    }
-
-                    // ✅ Get GlobalID in background (expensive for Teams/Zoom meetings)
-                    var globalId = globalIdFallback;
-                    try
-                    {
-                        var ns = Globals.ThisAddIn.Application.Session;
-                        var bgAppt = ns.GetItemFromID(entryId) as Outlook.AppointmentItem;
-                        if (bgAppt != null)
-                        {
-                            try
-                            {
-                                globalId = Safe<string>(() => bgAppt.GlobalAppointmentID) ?? entryId;
-                            }
-                            finally
-                            {
-                                System.Runtime.InteropServices.Marshal.ReleaseComObject(bgAppt);
-                            }
-                        }
-                    }
-                    catch { /* use fallback */ }
-
-                    var rec = new MeetingRecord
-                    {
-                        Source = source,
-                        EntryId = entryId,
-                        GlobalId = globalId,
-                        Subject = subject,
-                        StartUtc = startUtc,
-                        EndUtc = endUtc,
-                        ProgramCode = programCode,
-                        ActivityCode = activityCode,
-                        StageCode = stageCode,
-                        UserDisplayName = currentUserEmail,
-                        LastModifiedUtc = lastMod,
-                        IsRecurring = isRecurring,
-                        Recipients = string.Empty  // Skip recipients for performance
-                    };
-
-                    await DbWriter.UpsertAsync(rec);
-                    System.Diagnostics.Debug.WriteLine($"{source}: Updated {subject} for {currentUserEmail}");
-                });
+                // Fire-and-forget: existence check + DB upsert on background thread
+                _ = CalendarItems_ItemChange_BackgroundAsync(
+                    source, entryId, globalIdFallback, subject, startUtc, endUtc,
+                    programCode, activityCode, stageCode, currentUserEmail, lastMod, isRecurring);
             }
             finally
             {
@@ -301,25 +238,7 @@ namespace OutlookAddIn1
                             }
 
                             // Fire-and-forget deletion for ALL users
-                            System.Threading.Tasks.Task.Run(async () =>
-                            {
-                                try
-                                {
-                                    var deleted = await DbWriter.DeleteAllTimesheetsByGlobalIdAsync(cancelGlobalId, cancelEntryId);
-                                    if (deleted > 0)
-                                    {
-                                        System.Diagnostics.Debug.WriteLine($"Deleted {deleted} timesheet record(s) for cancelled meeting: {cancelSubject}");
-                                    }
-                                    else
-                                    {
-                                        System.Diagnostics.Debug.WriteLine($"No timesheet records found for cancelled meeting: {cancelSubject}");
-                                    }
-                                }
-                                catch (Exception ex)
-                                {
-                                    System.Diagnostics.Debug.WriteLine($"Failed to delete timesheet on cancellation: {ex.Message}");
-                                }
-                            });
+                            _ = ItemSend_ProcessCancellationAsync(cancelGlobalId, cancelEntryId, cancelSubject);
                         }
                     }
                     finally
@@ -376,39 +295,12 @@ namespace OutlookAddIn1
                     if (!IsTti(organizerEmail))
                         return;
 
-                    // ✅ CRITICAL: Check if timesheet already exists in database
-                    // Only auto-submit on ItemSend if the user has ALREADY submitted via "Submit Timesheet"
-                    try
-                    {
-                        var tempRec = new MeetingRecord
-                        {
-                            GlobalId = Safe<string>(() => appt2.GlobalAppointmentID) ?? entryId,
-                            EntryId = entryId,
-                            StartUtc = startUtc,
-                            UserDisplayName = organizerEmail
-                        };
-
-                        var existing = DbWriter.GetExistingTimesheetAsync(tempRec).Result;
-
-                        if (existing == null)
-                        {
-                            System.Diagnostics.Debug.WriteLine($"ItemSend: Skipping auto-submit for new meeting '{subject}' - user must manually submit timesheet");
-                            return; // ✅ EXIT: Don't auto-submit new meetings!
-                        }
-
-                        System.Diagnostics.Debug.WriteLine($"ItemSend: Existing timesheet found for '{subject}' - proceeding with update");
-                    }
-                    catch (Exception checkEx)
-                    {
-                        System.Diagnostics.Debug.WriteLine($"ItemSend: Failed to check existing timesheet: {checkEx.Message}");
-                        return; // ✅ If we can't check, don't risk auto-submitting
-                    }
-
-                    // ✅ FIX: Capture ONLY fast properties
+                    // Read all remaining COM properties NOW before handing off to background
                     var endUtc = appt2.EndUTC;
                     var lastMod = appt2.LastModificationTime.ToUniversalTime();
+                    var initialGlobalId = Safe<string>(() => appt2.GlobalAppointmentID) ?? entryId;
 
-                    // ✅ CRITICAL: Clear ProcessOnSend flag IMMEDIATELY
+                    // Clear ProcessOnSend flag synchronously (must happen before send completes)
                     try
                     {
                         var processOnSendProp = ups2.Find("ProcessOnSend");
@@ -424,98 +316,10 @@ namespace OutlookAddIn1
                         System.Diagnostics.Debug.WriteLine($"Failed to clear flag: {flagEx.Message}");
                     }
 
-                    // ✅ Store variables for background processing
-                    var entryIdForBackground = entryId;
-                    var subjectForLog = subject;
-                    var programCodeCopy = programCode;
-                    var activityCodeCopy = activityCode;
-                    var stageCodeCopy = stageCode;
-
-                    // ✅ FIX: Use async/await pattern with proper timing
-                    System.Threading.Tasks.Task.Run(async () =>
-                    {
-                        try
-                        {
-                            // ✅ Wait for send to complete - check multiple times with increasing delays
-                            await System.Threading.Tasks.Task.Delay(500); // Initial short delay
-
-                            Outlook.AppointmentItem bgAppt = null;
-                            string globalId = "";
-                            string recipients = "";
-                            int retryCount = 0;
-                            const int maxRetries = 5;
-
-                            while (retryCount < maxRetries)
-                            {
-                                try
-                                {
-                                    var ns = Globals.ThisAddIn.Application.Session;
-                                    bgAppt = ns.GetItemFromID(entryIdForBackground) as Outlook.AppointmentItem;
-
-                                    if (bgAppt != null)
-                                    {
-                                        // ✅ Check if appointment is in a stable state (has been saved after send)
-                                        globalId = Safe<string>(() => bgAppt.GlobalAppointmentID) ?? entryIdForBackground;
-                                        recipients = GetAllRecipients(bgAppt);
-
-                                        // ✅ Apply category
-                                        ApplyCategoryToAppointment(bgAppt);
-
-                                        // Success - exit retry loop
-                                        System.Diagnostics.Debug.WriteLine($"ItemSend: Category applied successfully after {retryCount} retries");
-                                        break;
-                                    }
-                                }
-                                catch (System.Runtime.InteropServices.COMException comEx)
-                                {
-                                    // ✅ COM exception might mean appointment not ready yet
-                                    System.Diagnostics.Debug.WriteLine($"ItemSend: COM exception on retry {retryCount}: {comEx.Message}");
-                                    retryCount++;
-
-                                    if (retryCount < maxRetries)
-                                    {
-                                        await System.Threading.Tasks.Task.Delay(500 * retryCount); // Exponential backoff
-                                    }
-                                    else
-                                    {
-                                        throw; // Give up after max retries
-                                    }
-                                }
-                                finally
-                                {
-                                    if (bgAppt != null)
-                                    {
-                                        System.Runtime.InteropServices.Marshal.ReleaseComObject(bgAppt);
-                                        bgAppt = null;
-                                    }
-                                }
-                            }
-
-                            // ✅ Save to database (after category is applied)
-                            var rec = new MeetingRecord
-                            {
-                                Source = "ItemSend",
-                                EntryId = entryIdForBackground,
-                                GlobalId = globalId,
-                                Subject = subjectForLog,
-                                StartUtc = startUtc,
-                                EndUtc = endUtc,
-                                ProgramCode = programCodeCopy ?? "",
-                                ActivityCode = activityCodeCopy ?? "",
-                                StageCode = stageCodeCopy ?? "",
-                                UserDisplayName = organizerEmail,
-                                LastModifiedUtc = lastMod,
-                                Recipients = recipients
-                            };
-
-                            await DbWriter.UpsertAsync(rec);
-                            System.Diagnostics.Debug.WriteLine($"ItemSend: Saved {subjectForLog} for {organizerEmail}");
-                        }
-                        catch (Exception ex)
-                        {
-                            System.Diagnostics.Debug.WriteLine($"ItemSend background failed: {ex.Message}");
-                        }
-                    });
+                    // Fire-and-forget: existence check (was .Result) + retry loop + DB upsert
+                    _ = ItemSend_ProcessSendAsync(
+                        entryId, initialGlobalId, subject, startUtc, endUtc, lastMod,
+                        programCode, activityCode, stageCode, organizerEmail);
                 }
                 finally
                 {
@@ -532,71 +336,73 @@ namespace OutlookAddIn1
             }
         }
 
-        // ✅ NEW: Helper method to apply category (called in background)
+        // Ensures "Timesheet Submitted" category exists with the correct colour.
+        // Result is cached after the first call so subsequent submits skip the COM scan.
+        public void EnsureTimesheetCategory()
+        {
+            if (_timesheetCategoryEnsured) return;
+            const string categoryName = "Timesheet Submitted";
+            const Outlook.OlCategoryColor categoryColor = Outlook.OlCategoryColor.olCategoryColorPeach;
+            try
+            {
+                var categories = this.Application.Session.Categories;
+                bool found = false;
+                foreach (Outlook.Category c in categories)
+                {
+                    if (c.Name == categoryName)
+                    {
+                        if (c.Color != categoryColor)
+                        {
+                            categories.Remove(categoryName);
+                            categories.Add(categoryName, categoryColor);
+                        }
+                        found = true;
+                        break;
+                    }
+                }
+                if (!found)
+                    categories.Add(categoryName, categoryColor);
+                _timesheetCategoryEnsured = true;
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"EnsureTimesheetCategory failed: {ex.Message}");
+            }
+        }
+
+        // Applies "Timesheet Submitted" category to the appointment and saves it.
         private void ApplyCategoryToAppointment(Outlook.AppointmentItem appt)
         {
             try
             {
-                var categoryName = "Timesheet Submitted";
-                var categoryColor = Outlook.OlCategoryColor.olCategoryColorPeach;
+                const string categoryName = "Timesheet Submitted";
 
-                System.Diagnostics.Debug.WriteLine($"ApplyCategoryToAppointment (ItemSend): About to apply category");
-                System.Diagnostics.Debug.WriteLine($"ApplyCategoryToAppointment (ItemSend): appt.Subject={appt.Subject}");
-                System.Diagnostics.Debug.WriteLine($"ApplyCategoryToAppointment (ItemSend): appt.EntryID={appt.EntryID}");
-                System.Diagnostics.Debug.WriteLine($"ApplyCategoryToAppointment (ItemSend): Current appt.Categories='{appt.Categories}'");
+                // PERF: Create/validate the category once; skip COM scan on repeat calls
+                EnsureTimesheetCategory();
 
-                // Check if category exists, create if not
-                var categories = this.Application.Session.Categories;
-                var existingCategory = System.Linq.Enumerable.FirstOrDefault(
-                    System.Linq.Enumerable.Cast<Outlook.Category>(categories),
-                    c => c.Name == categoryName);
-
-                if (existingCategory == null)
-                {
-                    System.Diagnostics.Debug.WriteLine($"ApplyCategoryToAppointment (ItemSend): Category '{categoryName}' does not exist, creating with Peach color");
-                    categories.Add(categoryName, categoryColor);
-                    System.Diagnostics.Debug.WriteLine($"ApplyCategoryToAppointment (ItemSend): Category created successfully");
-                }
-                else
-                {
-                    System.Diagnostics.Debug.WriteLine($"ApplyCategoryToAppointment (ItemSend): Category '{categoryName}' already exists with color {existingCategory.Color}");
-
-                    // ✅ FIX: If category exists with wrong color, delete and recreate it
-                    if (existingCategory.Color != categoryColor)
-                    {
-                        System.Diagnostics.Debug.WriteLine($"ApplyCategoryToAppointment (ItemSend): Category has wrong color ({existingCategory.Color}), deleting and recreating with Peach");
-                        categories.Remove(categoryName);
-                        categories.Add(categoryName, categoryColor);
-                        System.Diagnostics.Debug.WriteLine($"ApplyCategoryToAppointment (ItemSend): Category recreated with Peach color");
-                    }
-                }
-
-                // Remove any existing timesheet categories first
+                // Merge with any non-timesheet categories already on the appointment
                 if (!string.IsNullOrEmpty(appt.Categories))
                 {
-                    var existingCategories = appt.Categories.Split(new[] { ',', ';' }, StringSplitOptions.RemoveEmptyEntries)
+                    var existing = appt.Categories
+                        .Split(new[] { ',', ';' }, StringSplitOptions.RemoveEmptyEntries)
                         .Select(c => c.Trim())
                         .Where(c => !c.Equals("Timesheet Submitted", StringComparison.OrdinalIgnoreCase) &&
-                                   !c.Equals("Timesheet Ignored", StringComparison.OrdinalIgnoreCase))
+                                    !c.Equals("Timesheet Ignored",   StringComparison.OrdinalIgnoreCase))
                         .ToList();
-
-                    existingCategories.Add(categoryName);
-                    appt.Categories = string.Join(", ", existingCategories);
-                    System.Diagnostics.Debug.WriteLine($"ApplyCategoryToAppointment (ItemSend): Updated categories (had existing): '{appt.Categories}'");
+                    existing.Add(categoryName);
+                    appt.Categories = string.Join(", ", existing);
                 }
                 else
                 {
                     appt.Categories = categoryName;
-                    System.Diagnostics.Debug.WriteLine($"ApplyCategoryToAppointment (ItemSend): Set categories (was empty): '{appt.Categories}'");
                 }
 
                 appt.Save();
-                System.Diagnostics.Debug.WriteLine($"ApplyCategoryToAppointment (ItemSend): appt.Save() completed. Final categories='{appt.Categories}'");
+                System.Diagnostics.Debug.WriteLine($"ApplyCategoryToAppointment: Applied '{categoryName}' to '{appt.Subject}'");
             }
             catch (Exception ex)
             {
-                System.Diagnostics.Debug.WriteLine($"ApplyCategoryToAppointment (ItemSend): FAILED! Exception: {ex.Message}");
-                System.Diagnostics.Debug.WriteLine($"ApplyCategoryToAppointment (ItemSend): Stack trace: {ex.StackTrace}");
+                System.Diagnostics.Debug.WriteLine($"ApplyCategoryToAppointment failed: {ex.Message}\n{ex.StackTrace}");
             }
         }
 
@@ -748,6 +554,186 @@ namespace OutlookAddIn1
             return !string.IsNullOrWhiteSpace(_cachedUserEmail)
                 ? _cachedUserEmail
                 : GetCurrentUserSmtpFromSession();
+        }
+
+        // ── Background helpers (replaces anonymous Task.Run lambdas) ──────────
+
+        // Fix 4: Named async method — replaces Task.Run in CalendarItems_ItemChange
+        private async System.Threading.Tasks.Task CalendarItems_ItemChange_BackgroundAsync(
+            string source, string entryId, string globalIdFallback,
+            string subject, DateTime startUtc, DateTime endUtc,
+            string programCode, string activityCode, string stageCode,
+            string currentUserEmail, DateTime lastMod, bool isRecurring)
+        {
+            var tempRec = new MeetingRecord
+            {
+                GlobalId = globalIdFallback,
+                EntryId = entryId,
+                StartUtc = startUtc,
+                UserDisplayName = currentUserEmail
+            };
+
+            try
+            {
+                var existing = await DbWriter.GetExistingTimesheetAsync(tempRec).ConfigureAwait(false);
+                if (existing == null)
+                {
+                    System.Diagnostics.Debug.WriteLine($"{source}: Skipping '{subject}' - no existing timesheet found");
+                    return;
+                }
+                System.Diagnostics.Debug.WriteLine($"{source}: Existing timesheet found for '{subject}' - proceeding with update");
+            }
+            catch (Exception checkEx)
+            {
+                System.Diagnostics.Debug.WriteLine($"{source}: Failed to check existing timesheet: {checkEx.Message}");
+                return;
+            }
+
+            var globalId = globalIdFallback;
+            try
+            {
+                var ns = Globals.ThisAddIn.Application.Session;
+                var bgAppt = ns.GetItemFromID(entryId) as Outlook.AppointmentItem;
+                if (bgAppt != null)
+                {
+                    try   { globalId = Safe<string>(() => bgAppt.GlobalAppointmentID) ?? entryId; }
+                    finally { System.Runtime.InteropServices.Marshal.ReleaseComObject(bgAppt); }
+                }
+            }
+            catch { /* use fallback */ }
+
+            var rec = new MeetingRecord
+            {
+                Source      = source,
+                EntryId     = entryId,
+                GlobalId    = globalId,
+                Subject     = subject,
+                StartUtc    = startUtc,
+                EndUtc      = endUtc,
+                ProgramCode = programCode,
+                ActivityCode = activityCode,
+                StageCode   = stageCode,
+                UserDisplayName = currentUserEmail,
+                LastModifiedUtc = lastMod,
+                IsRecurring = isRecurring,
+                Recipients  = string.Empty
+            };
+
+            await DbWriter.UpsertAsync(rec).ConfigureAwait(false);
+            System.Diagnostics.Debug.WriteLine($"{source}: Updated '{subject}' for {currentUserEmail}");
+        }
+
+        // Fix 4: Named async method — replaces Task.Run in meeting-cancellation path
+        private async System.Threading.Tasks.Task ItemSend_ProcessCancellationAsync(
+            string cancelGlobalId, string cancelEntryId, string cancelSubject)
+        {
+            try
+            {
+                var deleted = await DbWriter.DeleteAllTimesheetsByGlobalIdAsync(cancelGlobalId, cancelEntryId).ConfigureAwait(false);
+                System.Diagnostics.Debug.WriteLine(deleted > 0
+                    ? $"Deleted {deleted} timesheet record(s) for cancelled meeting: {cancelSubject}"
+                    : $"No timesheet records found for cancelled meeting: {cancelSubject}");
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"Failed to delete timesheet on cancellation: {ex.Message}");
+            }
+        }
+
+        // Fix 1 + 4: Named async method — replaces Task.Run in normal-send path AND
+        //            moves the .Result existence-check here so the UI thread is never blocked
+        private async System.Threading.Tasks.Task ItemSend_ProcessSendAsync(
+            string entryId, string initialGlobalId, string subject,
+            DateTime startUtc, DateTime endUtc, DateTime lastMod,
+            string programCode, string activityCode, string stageCode,
+            string organizerEmail)
+        {
+            try
+            {
+                // FIX 1: existence check is now fully async (was .Result on the UI thread)
+                var tempRec = new MeetingRecord
+                {
+                    GlobalId        = initialGlobalId,
+                    EntryId         = entryId,
+                    StartUtc        = startUtc,
+                    UserDisplayName = organizerEmail
+                };
+
+                var existing = await DbWriter.GetExistingTimesheetAsync(tempRec).ConfigureAwait(false);
+                if (existing == null)
+                {
+                    System.Diagnostics.Debug.WriteLine($"ItemSend: Skipping auto-submit for '{subject}' - no prior submission found");
+                    return;
+                }
+
+                System.Diagnostics.Debug.WriteLine($"ItemSend: Prior submission found for '{subject}' - proceeding with update");
+
+                // Wait for the send to complete before re-accessing the appointment
+                await System.Threading.Tasks.Task.Delay(500).ConfigureAwait(false);
+
+                Outlook.AppointmentItem bgAppt = null;
+                string globalId   = initialGlobalId;
+                string recipients = "";
+                int retryCount    = 0;
+                const int maxRetries = 5;
+
+                while (retryCount < maxRetries)
+                {
+                    try
+                    {
+                        var ns = Globals.ThisAddIn.Application.Session;
+                        bgAppt = ns.GetItemFromID(entryId) as Outlook.AppointmentItem;
+                        if (bgAppt != null)
+                        {
+                            globalId   = Safe<string>(() => bgAppt.GlobalAppointmentID) ?? entryId;
+                            recipients = GetAllRecipients(bgAppt);
+                            ApplyCategoryToAppointment(bgAppt);
+                            System.Diagnostics.Debug.WriteLine($"ItemSend: Category applied after {retryCount} retries");
+                            break;
+                        }
+                    }
+                    catch (System.Runtime.InteropServices.COMException comEx)
+                    {
+                        System.Diagnostics.Debug.WriteLine($"ItemSend: COM exception retry {retryCount}: {comEx.Message}");
+                        retryCount++;
+                        if (retryCount < maxRetries)
+                            await System.Threading.Tasks.Task.Delay(500 * retryCount).ConfigureAwait(false);
+                        else
+                            throw;
+                    }
+                    finally
+                    {
+                        if (bgAppt != null)
+                        {
+                            System.Runtime.InteropServices.Marshal.ReleaseComObject(bgAppt);
+                            bgAppt = null;
+                        }
+                    }
+                }
+
+                var rec = new MeetingRecord
+                {
+                    Source          = "ItemSend",
+                    EntryId         = entryId,
+                    GlobalId        = globalId,
+                    Subject         = subject,
+                    StartUtc        = startUtc,
+                    EndUtc          = endUtc,
+                    ProgramCode     = programCode  ?? "",
+                    ActivityCode    = activityCode ?? "",
+                    StageCode       = stageCode    ?? "",
+                    UserDisplayName = organizerEmail,
+                    LastModifiedUtc = lastMod,
+                    Recipients      = recipients
+                };
+
+                await DbWriter.UpsertAsync(rec).ConfigureAwait(false);
+                System.Diagnostics.Debug.WriteLine($"ItemSend: Saved '{subject}' for {organizerEmail}");
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"ItemSend_ProcessSendAsync failed: {ex.Message}");
+            }
         }
 
         private const int PaneFixedWidth = 370;

@@ -1566,7 +1566,7 @@ namespace OutlookAddIn1
 
                 // ✅ Show original program code with its calculated hours
                 string originalProgram = cboProgram.SelectedItem?.ToString() ?? "Original";
-                lblAllocatedTime.Text = $"Total: {_meetingDurationHours:F1}h ({originalProgram}: {originalProgramHours:F1}h)";  // ✅ Changed to F1 for consistency
+                lblAllocatedTime.Text = $"Total: {_meetingDurationHours:F1}h";
 
                 // ✅ Validation: original program hours must be > 0
                 bool isValid = originalProgramHours > 0.01;

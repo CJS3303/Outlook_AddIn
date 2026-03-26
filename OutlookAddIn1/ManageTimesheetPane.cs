@@ -2540,7 +2540,7 @@ namespace OutlookAddIn1
                 double additionalHours = _programAllocations.Sum(p => p.Hours);
                 double originalProgramHours = _meetingDurationHours - additionalHours;
                 string originalProgram = cboProgram.SelectedItem?.ToString() ?? "Original";
-                lblAllocatedTime.Text = $"Total: {_meetingDurationHours:F1}h ({originalProgram}: {originalProgramHours:F1}h)";
+                lblAllocatedTime.Text = $"Total: {_meetingDurationHours:F1}h";
                 bool isValid = originalProgramHours > 0.01;
                 lblAllocatedTime.ForeColor = isValid ? Color.Green : Color.Red;
             }

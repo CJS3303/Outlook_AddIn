@@ -1388,7 +1388,7 @@ namespace OutlookAddIn1
                     Left = 10,
                     Top = 30,
                     Width = 450,
-                    Height = 210,
+                    Height = 200,
                     AutoScroll = true,
                     FlowDirection = FlowDirection.TopDown,
                     WrapContents = false,
@@ -1397,9 +1397,10 @@ namespace OutlookAddIn1
 
                 btnAddProgram = new Button
                 {
+                    Left = 10,
+                    Top = 235,
                     Width = 150,
                     Height = 25,
-                    Margin = new Padding(0, 4, 0, 0),
                     Text = "+ Add Program",
                     BackColor = Color.FromArgb(0, 120, 212),
                     ForeColor = Color.White,
@@ -1409,22 +1410,20 @@ namespace OutlookAddIn1
                 btnAddProgram.FlatAppearance.BorderSize = 0;
                 btnAddProgram.Click += BtnAddProgram_Click;
 
-                // Button lives inside the flow panel so it sits right below the last card
-                flowPrograms.Controls.Add(btnAddProgram);
-
                 lblAllocatedTime = new Label
                 {
                     Left = 170,
-                    Top = 245,
+                    Top = 238,
                     Width = 295,
                     Height = 25,
                     Text = $"Allocated: {_meetingDurationHours:F1} / {_meetingDurationHours:F1} hrs",
                     Font = new System.Drawing.Font("Segoe UI", 9, System.Drawing.FontStyle.Bold),
-                    ForeColor = System.Drawing.Color.Green
+                    ForeColor = System.Drawing.Color.Green,
+                    TextAlign = ContentAlignment.MiddleRight
                 };
 
                 pnlMultiProgram.Controls.AddRange(new Control[] {
-                    flowPrograms, lblAllocatedTime
+                    flowPrograms, btnAddProgram, lblAllocatedTime
                 });
 
                 // ✅ FIX: ALWAYS use compact layout - buttons on same row as checkbox
@@ -1554,10 +1553,7 @@ namespace OutlookAddIn1
                 };
                 allocationControl.OnHoursChanged += (s, ev) => UpdateTotalAllocated();
 
-                // Insert before btnAddProgram so the button always stays at the bottom
-                int btnIndex = flowPrograms.Controls.GetChildIndex(btnAddProgram);
                 flowPrograms.Controls.Add(allocationControl);
-                flowPrograms.Controls.SetChildIndex(allocationControl, btnIndex);
                 _programAllocations.Add(allocationControl.Allocation);
                 UpdateTotalAllocated();
             }

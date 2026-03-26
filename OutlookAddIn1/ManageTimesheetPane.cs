@@ -106,6 +106,28 @@ namespace OutlookAddIn1
             };
         }
 
+        // Fixed pane width matches ThisAddIn.PaneFixedWidth.
+        // TabControl chrome (borders + padding) eats ~8 px on each side.
+        private const int PaneFixedWidth = 370;
+        private const int TabChrome      = 8;
+
+        /// <summary>
+        /// Returns the usable card width inside a FlowLayoutPanel, even when the
+        /// panel's parent tab page has never been selected (Width == 0).
+        /// Falls back to a calculation based on the fixed pane width.
+        /// </summary>
+        private int GetFlowContentWidth(FlowLayoutPanel flow)
+        {
+            int clientW = flow.ClientSize.Width;
+            if (clientW <= 0)
+            {
+                // Tab page not yet laid out — compute from the fixed pane width.
+                // PaneFixedWidth − 2 × TabChrome − horizontal padding
+                clientW = PaneFixedWidth - (TabChrome * 2) - flow.Padding.Horizontal;
+            }
+            return clientW - flow.Padding.Horizontal - SystemInformation.VerticalScrollBarWidth;
+        }
+
         public ManageTimesheetPane()
         {
             this.AutoScaleMode = AutoScaleMode.None;
@@ -113,7 +135,6 @@ namespace OutlookAddIn1
             _currentWeekStart = GetMondayOfCurrentWeek(DateTime.Now);
             _dailyHours = new double[7];
             _dayLabels = new[] { "Mo", "Tu", "We", "Th", "Fr", "Sa", "Su" };
-
         }
 
         protected override void Dispose(bool disposing)
@@ -414,7 +435,7 @@ namespace OutlookAddIn1
                     {
                         Text = "Loading submitted events...",
                         Font = _fontLabel,
-                        Width = flowSubmitted.Width - 20,
+                        Width = GetFlowContentWidth(flowSubmitted),
                         Height = 30,
                         ForeColor = Color.Gray
                     });
@@ -544,7 +565,7 @@ namespace OutlookAddIn1
                         {
                             Text = "No submitted or ignored events found.",
                             Font = _fontLabel,
-                            Size = new Size(flowSubmitted.Width - 25, 40),
+                            Size = new Size(GetFlowContentWidth(flowSubmitted), 40),
                             ForeColor = Color.Gray
                         });
                         return;
@@ -554,7 +575,7 @@ namespace OutlookAddIn1
                     if (yesterdayItems.Count > 0) AddSubmittedTabSection("Yesterday", yesterdayItems);
                     if (lastWeekItems.Count > 0)  AddSubmittedTabSection("Last Week", lastWeekItems);
 
-                    flowSubmitted.Controls.Add(new Label { Size = new Size(flowSubmitted.Width - 25, 100), Text = "" });
+                    flowSubmitted.Controls.Add(new Label { Size = new Size(GetFlowContentWidth(flowSubmitted), 100), Text = "" });
                 });
             }
             catch (Exception ex)
@@ -566,7 +587,7 @@ namespace OutlookAddIn1
                     {
                         Text = $"Error: {ex.Message}",
                         Font = _fontLabel,
-                        Width = flowSubmitted.Width - 20,
+                        Width = GetFlowContentWidth(flowSubmitted),
                         Height = 60,
                         ForeColor = Color.Red
                     });
@@ -587,8 +608,7 @@ namespace OutlookAddIn1
         // submitted tab. Submitted and ignored cards are interleaved, sorted by time.
         private void AddSubmittedTabSection(string title, List<SubmittedTabItem> items)
         {
-            // Reserve scrollbar width so cards are never clipped when the bar shows on hover
-            int w = flowSubmitted.ClientSize.Width - flowSubmitted.Padding.Horizontal - SystemInformation.VerticalScrollBarWidth;
+            int w = GetFlowContentWidth(flowSubmitted);
 
             // ── layout constants — identical to unsubmitted cards ─────────────
             const int subjectY  = 5;
@@ -740,7 +760,12 @@ namespace OutlookAddIn1
                             ? $"Deleted {deletedCount} program record(s) for this meeting."
                             : $"Deleted {deletedCount} timesheet record.",
                         "Cancelled");
+
+                    // Refresh both tabs: item disappears from Submitted, reappears in Unsubmitted
+                    _cachedUnsubmittedMeetings = null;
+                    _cacheExpiry = DateTime.MinValue;
                     await LoadSubmittedMeetingsAsync();
+                    await LoadUnsubmittedMeetingsAsync();
                 }
                 else
                 {
@@ -785,6 +810,10 @@ namespace OutlookAddIn1
                     System.Diagnostics.Debug.WriteLine("CancelIgnoreSubmissionAsync: Successfully un-ignored, removing category and reloading");
                     RemoveTimesheetCategoryFromAppointment(meeting.EntryId);
                     MessageBox.Show("Ignore status removed!", "Un-Ignored");
+
+                    // Invalidate unsubmitted cache so the item reappears
+                    _cachedUnsubmittedMeetings = null;
+                    _cacheExpiry = DateTime.MinValue;
                     await LoadSubmittedMeetingsAsync();
                     await LoadUnsubmittedMeetingsAsync();
                 }
@@ -1436,7 +1465,7 @@ namespace OutlookAddIn1
                 {
                     Text = message,
                     Font = _fontLabel,
-                    Width = flowUnsubmitted.Width - 20,
+                    Width = GetFlowContentWidth(flowUnsubmitted),
                     Height = 30,
                     ForeColor = Color.Gray
                 });
@@ -1452,7 +1481,7 @@ namespace OutlookAddIn1
                 {
                     Text = message,
                     Font = _fontLabel,
-                    Width = flowUnsubmitted.Width - 20,
+                    Width = GetFlowContentWidth(flowUnsubmitted),
                     Height = 60,
                     ForeColor = Color.Red
                 });
@@ -1787,7 +1816,7 @@ namespace OutlookAddIn1
                             {
                                 Text = "No unsubmitted events found.",
                                 Font = _fontLabel,
-                                Size = new Size(flowUnsubmitted.Width - 25, 40),
+                                Size = new Size(GetFlowContentWidth(flowUnsubmitted), 40),
                                 ForeColor = Color.Green,
                                 Padding = new Padding(0, 10, 0, 0)
                             });
@@ -1801,7 +1830,7 @@ namespace OutlookAddIn1
                         // Bottom padding spacer to ensure last section is fully visible when scrolling
                         flowUnsubmitted.Controls.Add(new Label
                         {
-                            Size = new Size(flowUnsubmitted.Width - 25, 100),
+                            Size = new Size(GetFlowContentWidth(flowUnsubmitted), 100),
                             Text = ""
                         });
                     }
@@ -1827,8 +1856,7 @@ namespace OutlookAddIn1
         private void AddMeetingSection(string title, List<MeetingRecord> meetings, bool isSubmitted = false)
         {
             var flowPanel = isSubmitted ? flowSubmitted : flowUnsubmitted;
-            // Reserve scrollbar width so cards are never clipped when the bar shows on hover
-            int w = flowPanel.ClientSize.Width - flowPanel.Padding.Horizontal - SystemInformation.VerticalScrollBarWidth;
+            int w = GetFlowContentWidth(flowPanel);
 
             // ── shared constants (match unsubmitted exactly) ──────────────────
             const int subjectY    = 5;

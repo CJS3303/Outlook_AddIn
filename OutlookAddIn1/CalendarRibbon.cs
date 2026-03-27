@@ -528,7 +528,10 @@ namespace OutlookAddIn1
                 };
 
                 // ✅ CRITICAL FIX: Get ALL timesheet records for this meeting (handles multi-program submissions)
-                var existingTimesheets = await DbWriter.GetAllTimesheetsForMeetingAsync(tempRec);
+                var allRecords = await DbWriter.GetAllTimesheetsForMeetingAsync(tempRec);
+
+                // Filter to submitted only — ignored items should NOT be cancelled via this action
+                var existingTimesheets = allRecords?.Where(t => t.Status != "ignored").ToList();
 
                 if (existingTimesheets == null || existingTimesheets.Count == 0)
                 {

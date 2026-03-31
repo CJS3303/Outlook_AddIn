@@ -437,6 +437,7 @@ namespace OutlookAddIn1
             {
                 this.Invoke((MethodInvoker)delegate
                 {
+                    flowSubmitted.SuspendLayout();
                     DisposeAndClearControls(flowSubmitted.Controls);
                     flowSubmitted.Controls.Add(new Label
                     {
@@ -446,6 +447,7 @@ namespace OutlookAddIn1
                         Height = 30,
                         ForeColor = Color.Gray
                     });
+                    flowSubmitted.ResumeLayout(true);
                 });
 
                 var email = GetCurrentUserEmail();
@@ -483,16 +485,21 @@ namespace OutlookAddIn1
                                 var startUtc = TimeZoneInfo.ConvertTimeToUtc(startTorontoTime, TorontoTz);
                                 var endUtc   = TimeZoneInfo.ConvertTimeToUtc(endTorontoTime,   TorontoTz);
                                 
+                                double? hoursAlloc = null;
+                                if (reader["hours_allocated"] != DBNull.Value)
+                                    hoursAlloc = Convert.ToDouble(reader["hours_allocated"]);
+
                                 submittedMeetings.Add(new MeetingRecord
                                 {
                                     GlobalId = reader["global_id"] as string ?? "",
                                     EntryId = reader["entry_id"] as string ?? "",
                                     Subject = reader["subject"] as string ?? "",
-                                    StartUtc = startUtc,  // ✅ Convert back to UTC
-                                    EndUtc = endUtc,      // ✅ Convert back to UTC
+                                    StartUtc = startUtc,
+                                    EndUtc = endUtc,
                                     ProgramCode = reader["job_code"] as string ?? "",
                                     ActivityCode = reader["activity_code"] as string ?? "",
                                     StageCode = reader["stage_code"] as string ?? "",
+                                    HoursAllocated = hoursAlloc,
                                     UserDisplayName = email,
                                     Status = "submitted"
                                 });
@@ -564,41 +571,54 @@ namespace OutlookAddIn1
 
                 this.Invoke((MethodInvoker)delegate
                 {
-                    DisposeAndClearControls(flowSubmitted.Controls);
-
-                    if (allItems.Count == 0)
+                    flowSubmitted.SuspendLayout();
+                    try
                     {
-                        flowSubmitted.Controls.Add(new Label
+                        DisposeAndClearControls(flowSubmitted.Controls);
+
+                        if (allItems.Count == 0)
                         {
-                            Text = "No submitted or ignored events found.",
-                            Font = _fontLabel,
-                            Size = new Size(GetFlowContentWidth(flowSubmitted), 40),
-                            ForeColor = Color.Gray
-                        });
-                        return;
+                            flowSubmitted.Controls.Add(new Label
+                            {
+                                Text = "No submitted or ignored events found.",
+                                Font = _fontLabel,
+                                Size = new Size(GetFlowContentWidth(flowSubmitted), 40),
+                                ForeColor = Color.Gray
+                            });
+                            return;
+                        }
+
+                        if (todayItems.Count > 0)     AddSubmittedTabSection("Today",     todayItems);
+                        if (yesterdayItems.Count > 0) AddSubmittedTabSection("Yesterday", yesterdayItems);
+                        if (lastWeekItems.Count > 0)  AddSubmittedTabSection("Last Week", lastWeekItems);
+
+                        flowSubmitted.Controls.Add(new Label { Size = new Size(GetFlowContentWidth(flowSubmitted), 100), Text = "" });
                     }
-
-                    if (todayItems.Count > 0)     AddSubmittedTabSection("Today",     todayItems);
-                    if (yesterdayItems.Count > 0) AddSubmittedTabSection("Yesterday", yesterdayItems);
-                    if (lastWeekItems.Count > 0)  AddSubmittedTabSection("Last Week", lastWeekItems);
-
-                    flowSubmitted.Controls.Add(new Label { Size = new Size(GetFlowContentWidth(flowSubmitted), 100), Text = "" });
+                    finally { flowSubmitted.ResumeLayout(true); }
                 });
             }
             catch (Exception ex)
             {
-                this.Invoke((MethodInvoker)delegate
+                System.Diagnostics.Debug.WriteLine($"LoadSubmittedMeetingsAsync EXCEPTION: {ex.Message}\n{ex.StackTrace}");
+                try
                 {
-                    DisposeAndClearControls(flowSubmitted.Controls);
-                    flowSubmitted.Controls.Add(new Label
+                    this.Invoke((MethodInvoker)delegate
                     {
-                        Text = $"Error: {ex.Message}",
-                        Font = _fontLabel,
-                        Width = GetFlowContentWidth(flowSubmitted),
-                        Height = 60,
-                        ForeColor = Color.Red
+                        DisposeAndClearControls(flowSubmitted.Controls);
+                        flowSubmitted.Controls.Add(new Label
+                        {
+                            Text = $"Error: {ex.Message}",
+                            Font = _fontLabel,
+                            Width = GetFlowContentWidth(flowSubmitted),
+                            Height = 80,
+                            ForeColor = Color.Red
+                        });
                     });
-                });
+                }
+                catch (Exception invokeEx)
+                {
+                    System.Diagnostics.Debug.WriteLine($"LoadSubmittedMeetingsAsync: Even error display failed: {invokeEx.Message}");
+                }
             }
         }
 
@@ -761,7 +781,7 @@ namespace OutlookAddIn1
                 if (deletedCount > 0)
                 {
                     System.Diagnostics.Debug.WriteLine($"CancelSubmissionAsync: Deletion complete, removing category and reloading");
-                    RemoveTimesheetCategoryFromAppointment(firstMeeting.EntryId);
+                    RemoveTimesheetCategoryFromAppointment(firstMeeting.EntryId, firstMeeting.GlobalId, firstMeeting.StartUtc);
                     MessageBox.Show(
                         meetings.Count > 1
                             ? $"Deleted {deletedCount} program record(s) for this meeting."
@@ -815,7 +835,7 @@ namespace OutlookAddIn1
                 if (await DbWriter.CancelIgnoreTimesheetAsync(tempRec))
                 {
                     System.Diagnostics.Debug.WriteLine("CancelIgnoreSubmissionAsync: Successfully un-ignored, removing category and reloading");
-                    RemoveTimesheetCategoryFromAppointment(meeting.EntryId);
+                    RemoveTimesheetCategoryFromAppointment(meeting.EntryId, meeting.GlobalId, meeting.StartUtc);
                     MessageBox.Show("Ignore status removed!", "Un-Ignored");
 
                     // Invalidate unsubmitted cache so the item reappears
@@ -1176,6 +1196,7 @@ namespace OutlookAddIn1
                 foreach (Microsoft.Office.Interop.Outlook.Category c in categories)
                 {
                     if (c.Name == categoryName) { existingCategory = c; break; }
+                    Marshal.ReleaseComObject(c);
                 }
 
                 if (existingCategory == null)
@@ -1239,16 +1260,71 @@ namespace OutlookAddIn1
         /// </summary>
         private void RemoveTimesheetCategoryFromAppointment(string entryId)
         {
+            RemoveTimesheetCategoryFromAppointment(entryId, null, null);
+        }
+
+        /// <summary>
+        /// Removes timesheet-related categories from an appointment.
+        /// If the EntryId lookup fails (stale ID), falls back to searching
+        /// the calendar by GlobalAppointmentID within a date window.
+        /// </summary>
+        private void RemoveTimesheetCategoryFromAppointment(string entryId, string globalId, DateTime? startUtc)
+        {
             Outlook.NameSpace ns = null;
             Outlook.AppointmentItem appt = null;
+            Outlook.MAPIFolder calFolder = null;
+            Outlook.Items calItems = null;
+            Outlook.Items restricted = null;
             try
             {
                 ns = Globals.ThisAddIn.Application.Session;
-                appt = ns.GetItemFromID(entryId) as Outlook.AppointmentItem;
+
+                // 1. Try direct lookup by EntryId
+                if (!string.IsNullOrWhiteSpace(entryId))
+                {
+                    try { appt = ns.GetItemFromID(entryId) as Outlook.AppointmentItem; }
+                    catch { /* stale/invalid EntryId */ }
+                }
+
+                // 2. Fallback: search calendar by date window + GlobalAppointmentID
+                if (appt == null && !string.IsNullOrWhiteSpace(globalId) && startUtc.HasValue)
+                {
+                    System.Diagnostics.Debug.WriteLine($"RemoveTimesheetCategory: EntryId lookup failed, searching by GlobalId '{globalId}'");
+                    calFolder = ns.GetDefaultFolder(Outlook.OlDefaultFolders.olFolderCalendar);
+                    calItems = calFolder.Items;
+                    calItems.IncludeRecurrences = false;
+                    calItems.Sort("[Start]");
+
+                    var searchStart = startUtc.Value.AddHours(-1).ToString("g");
+                    var searchEnd = startUtc.Value.AddHours(1).ToString("g");
+                    restricted = calItems.Restrict($"[Start] >= '{searchStart}' AND [Start] <= '{searchEnd}'");
+
+                    foreach (object obj in restricted)
+                    {
+                        var candidate = obj as Outlook.AppointmentItem;
+                        if (candidate == null)
+                        {
+                            Marshal.ReleaseComObject(obj);
+                            continue;
+                        }
+                        try
+                        {
+                            if (candidate.GlobalAppointmentID == globalId)
+                            {
+                                appt = candidate;
+                                System.Diagnostics.Debug.WriteLine($"RemoveTimesheetCategory: Found appointment via GlobalId search: {appt.Subject}");
+                                break;
+                            }
+                        }
+                        catch { /* ignore */ }
+                        if (appt == null || !ReferenceEquals(appt, candidate))
+                            Marshal.ReleaseComObject(candidate);
+                    }
+                }
 
                 if (appt == null)
                 {
-                    System.Diagnostics.Debug.WriteLine("RemoveTimesheetCategory: Appointment not found for EntryId");
+                    System.Diagnostics.Debug.WriteLine("RemoveTimesheetCategory: Appointment not found by EntryId or GlobalId");
                     return;
                 }
 
@@ -1275,12 +1351,14 @@ namespace OutlookAddIn1
             }
             catch (Exception ex)
             {
-                // Appointment may have been deleted from calendar — not critical
                 System.Diagnostics.Debug.WriteLine($"RemoveTimesheetCategory failed: {ex.Message}");
             }
             finally
             {
                 if (appt != null) Marshal.ReleaseComObject(appt);
+                if (restricted != null) Marshal.ReleaseComObject(restricted);
+                if (calItems != null) Marshal.ReleaseComObject(calItems);
+                if (calFolder != null) Marshal.ReleaseComObject(calFolder);
                 if (ns != null) Marshal.ReleaseComObject(ns);
             }
         }
@@ -1467,6 +1545,7 @@ namespace OutlookAddIn1
         {
             this.Invoke((MethodInvoker)delegate
             {
+                flowUnsubmitted.SuspendLayout();
                 DisposeAndClearControls(flowUnsubmitted.Controls);
                 flowUnsubmitted.Controls.Add(new Label
                 {
@@ -1476,6 +1555,7 @@ namespace OutlookAddIn1
                     Height = 30,
                     ForeColor = Color.Gray
                 });
+                flowUnsubmitted.ResumeLayout(true);
             });
         }
 
@@ -1483,6 +1563,7 @@ namespace OutlookAddIn1
         {
             this.Invoke((MethodInvoker)delegate
             {
+                flowUnsubmitted.SuspendLayout();
                 DisposeAndClearControls(flowUnsubmitted.Controls);
                 flowUnsubmitted.Controls.Add(new Label
                 {
@@ -1492,6 +1573,7 @@ namespace OutlookAddIn1
                     Height = 60,
                     ForeColor = Color.Red
                 });
+                flowUnsubmitted.ResumeLayout(true);
             });
         }
 
@@ -1785,6 +1867,7 @@ namespace OutlookAddIn1
                 // ✅ CRITICAL FIX: ALL UI updates must be on UI thread
                 this.Invoke((MethodInvoker)delegate
                 {
+                    flowUnsubmitted.SuspendLayout();
                     try
                     {
                         DisposeAndClearControls(flowUnsubmitted.Controls);
@@ -1819,6 +1902,7 @@ namespace OutlookAddIn1
                         System.Diagnostics.Debug.WriteLine($"Stack trace: {invokeEx.StackTrace}");
                         throw;
                     }
+                    finally { flowUnsubmitted.ResumeLayout(true); }
                 });
             }
             catch (Exception ex)

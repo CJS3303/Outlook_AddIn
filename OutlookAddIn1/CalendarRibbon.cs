@@ -95,6 +95,7 @@ namespace OutlookAddIn1
         public async void OnSubmitTimesheet(Office.IRibbonControl control)
         {
             Outlook.Explorer exp = null;
+            Outlook.Selection sel = null;
             Outlook.Inspector insp = null;
             Outlook.AppointmentItem appt = null;
 
@@ -103,10 +104,11 @@ namespace OutlookAddIn1
                 var app = Globals.ThisAddIn.Application;
 
                 exp = app.ActiveExplorer();
-
-                if (exp != null && exp.Selection != null && exp.Selection.Count > 0)
+                if (exp != null)
                 {
-                    appt = exp.Selection[1] as Outlook.AppointmentItem;
+                    sel = exp.Selection;
+                    if (sel != null && sel.Count > 0)
+                        appt = sel[1] as Outlook.AppointmentItem;
                 }
 
                 if (appt == null)
@@ -467,22 +469,10 @@ namespace OutlookAddIn1
             }
             finally
             {
-                // Release COM objects
-                if (appt != null)
-                {
-                    Marshal.ReleaseComObject(appt);
-                    appt = null;
-                }
-                if (insp != null)
-                {
-                    Marshal.ReleaseComObject(insp);
-                    insp = null;
-                }
-                if (exp != null)
-                {
-                    Marshal.ReleaseComObject(exp);
-                    exp = null;
-                }
+                if (sel != null) Marshal.ReleaseComObject(sel);
+                if (appt != null) Marshal.ReleaseComObject(appt);
+                if (insp != null) Marshal.ReleaseComObject(insp);
+                if (exp != null) Marshal.ReleaseComObject(exp);
             }
         }
 
@@ -490,6 +480,7 @@ namespace OutlookAddIn1
         public async void OnCancelTimesheet(Office.IRibbonControl control)
         {
             Outlook.Explorer exp = null;
+            Outlook.Selection sel = null;
             Outlook.Inspector insp = null;
             Outlook.AppointmentItem appt = null;
 
@@ -498,10 +489,11 @@ namespace OutlookAddIn1
                 var app = Globals.ThisAddIn.Application;
 
                 exp = app.ActiveExplorer();
-
-                if (exp != null && exp.Selection != null && exp.Selection.Count > 0)
+                if (exp != null)
                 {
-                    appt = exp.Selection[1] as Outlook.AppointmentItem;
+                    sel = exp.Selection;
+                    if (sel != null && sel.Count > 0)
+                        appt = sel[1] as Outlook.AppointmentItem;
                 }
 
                 if (appt == null)
@@ -680,22 +672,10 @@ namespace OutlookAddIn1
             }
             finally
             {
-                // Release COM objects
-                if (appt != null)
-                {
-                    Marshal.ReleaseComObject(appt);
-                    appt = null;
-                }
-                if (insp != null)
-                {
-                    Marshal.ReleaseComObject(insp);
-                    insp = null;
-                }
-                if (exp != null)
-                {
-                    Marshal.ReleaseComObject(exp);
-                    exp = null;
-                }
+                if (sel != null) Marshal.ReleaseComObject(sel);
+                if (appt != null) Marshal.ReleaseComObject(appt);
+                if (insp != null) Marshal.ReleaseComObject(insp);
+                if (exp != null) Marshal.ReleaseComObject(exp);
             }
         }
 
